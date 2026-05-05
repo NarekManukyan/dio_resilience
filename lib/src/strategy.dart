@@ -68,4 +68,24 @@ abstract class ResilienceStrategy {
     DioException error,
   ) async =>
       null;
+
+  /// Called by the pipeline instead of the standard `handler.next(options)`
+  /// dispatch when any strategy returns a non-null future here.
+  ///
+  /// Override this to intercept the actual HTTP dispatch — for example, hedging
+  /// fires multiple parallel requests and races them. Return `null` (the
+  /// default) to let the pipeline proceed with its standard single dispatch.
+  ///
+  /// Only the first strategy in the list that returns non-null takes effect.
+  ///
+  /// The [doRequest] closure accepts an optional [RequestOptions] override.
+  /// When non-null, the provided options are used for that fetch instead of
+  /// [PipelineContext.request]. Strategies that fire multiple branches (e.g.
+  /// hedging) should pass a per-branch clone so that Dio's internal reference
+  /// to the options object is isolated from concurrent mutations.
+  Future<Response<dynamic>>? onDispatch(
+    PipelineContext ctx,
+    Future<Response<dynamic>> Function([RequestOptions? options]) doRequest,
+  ) =>
+      null;
 }

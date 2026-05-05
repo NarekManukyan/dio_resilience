@@ -175,7 +175,7 @@ void main() {
         type: DioExceptionType.badResponse,
       );
 
-      expect(
+      await expectLater(
         () => strategy.onError(ctx, error),
         throwsA(isA<RefreshFailedException>()),
       );
@@ -297,6 +297,9 @@ void main() {
       final ctx = PipelineContext(request);
 
       await strategy.onRequest(ctx);
+      // Stream emissions go through the microtask queue — pump before
+      // asserting so the listener has had a chance to capture them.
+      await pumpEventQueue();
 
       // Expect at least authenticated state
       expect(states, contains(AuthState.authenticated));

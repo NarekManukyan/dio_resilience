@@ -64,6 +64,14 @@ final class RetryStrategy extends ResilienceStrategy {
       return null;
     }
 
+    // Never retry on resilience-internal failures (circuit open, rate limit,
+    // refresh failed, pipeline timeout). These are terminal decisions made by
+    // sibling strategies — replaying them would either short-circuit again or
+    // defeat the strategy's intent.
+    if (error is DioResilienceException || error.error is DioResilienceException) {
+      return null;
+    }
+
     // If this is a replay after auth refresh, don't count it against retry budget.
     if (ctx.wasReplayedAfterRefresh) {
       ctx.wasReplayedAfterRefresh = false;

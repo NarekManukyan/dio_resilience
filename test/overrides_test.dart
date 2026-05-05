@@ -13,7 +13,7 @@ void main() {
           retry: RetryOverride.disabled,
         );
         final opts = Options().resilience(overrides);
-        final retrieved = overridesFor(opts as RequestOptions);
+        final retrieved = overridesFor(opts);
         expect(retrieved?.retry, isA<RetryOverride>());
         expect(_retryKind(retrieved!.retry), equals('disabled'));
       });
@@ -29,13 +29,13 @@ void main() {
     group('noRetry() shortcut', () {
       test('sets retry to disabled', () {
         final opts = Options().noRetry();
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('disabled'));
       });
 
       test('preserves other overrides when chained', () {
         final opts = Options().noAuth().noRetry();
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('disabled'));
         expect(_authKind(overrides.auth), equals('disabled'));
       });
@@ -44,13 +44,13 @@ void main() {
     group('noAuth() shortcut', () {
       test('sets auth to disabled', () {
         final opts = Options().noAuth();
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_authKind(overrides!.auth), equals('disabled'));
       });
 
       test('preserves other overrides when chained', () {
         final opts = Options().noAuth().noRetry();
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_authKind(overrides!.auth), equals('disabled'));
         expect(_retryKind(overrides.retry), equals('disabled'));
       });
@@ -59,7 +59,7 @@ void main() {
     group('withTimeout() shortcut', () {
       test('sets timeout to total duration', () {
         final opts = Options().withTimeout(const Duration(seconds: 5));
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_timeoutKind(overrides!.timeout), equals('total'));
         expect(
           (overrides.timeout as TimeoutTotal?)?.duration,
@@ -72,7 +72,7 @@ void main() {
       test('sets auth to account with AccountId', () {
         const accountId = AccountId('alice');
         final opts = Options().withAccount(accountId);
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_authKind(overrides!.auth), equals('account'));
         expect(
           (overrides.auth as AuthAccount?)?.account.value,
@@ -84,7 +84,7 @@ void main() {
     group('retryAttempts() shortcut', () {
       test('sets retry to attempts override', () {
         final opts = Options().retryAttempts(5);
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('attempts'));
         expect(
           (overrides.retry as RetryAttempts?)?.attempts,
@@ -96,7 +96,7 @@ void main() {
     group('dontRetryOn() shortcut', () {
       test('sets retry to exceptWhen with statusIn conditions', () {
         final opts = Options().dontRetryOn({409, 422});
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('exceptWhen'));
         expect(
           (overrides.retry as RetryExceptWhen?)?.conditions.length,
@@ -109,7 +109,7 @@ void main() {
       test('sets retry to exceptWhen with custom conditions', () {
         const cond = RetryCondition.dioMessageContains('foo');
         final opts = Options().dontRetryWhen([cond]);
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('exceptWhen'));
         expect(
           (overrides.retry as RetryExceptWhen?)?.conditions.length,
@@ -122,7 +122,7 @@ void main() {
       test('sets retry to onlyWhen with custom conditions', () {
         const cond = RetryCondition.networkError();
         final opts = Options().retryOnlyWhen([cond]);
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('onlyWhen'));
         expect(
           (overrides.retry as RetryOnlyWhen?)?.conditions.length,
@@ -134,7 +134,7 @@ void main() {
     group('chaining merges correctly', () {
       test('noRetry().noAuth() sets both retry and auth to disabled', () {
         final opts = Options().noRetry().noAuth();
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('disabled'));
         expect(_authKind(overrides.auth), equals('disabled'));
       });
@@ -143,7 +143,7 @@ void main() {
         final opts = Options()
             .withTimeout(const Duration(seconds: 5))
             .withTimeout(const Duration(seconds: 10));
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(
           (overrides!.timeout as TimeoutTotal?)?.duration,
           equals(const Duration(seconds: 10)),
@@ -154,14 +154,14 @@ void main() {
         final opts = Options()
             .retryAttempts(3)
             .dontRetryWhen([const RetryCondition.status(429)]);
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         // Last call wins: dontRetryWhen replaces retryAttempts
         expect(_retryKind(overrides!.retry), equals('exceptWhen'));
       });
 
       test('noAuth().withAccount() replaces correctly', () {
         final opts = Options().noAuth().withAccount(const AccountId('bob'));
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_authKind(overrides!.auth), equals('account'));
         expect(
           (overrides.auth as AuthAccount?)?.account.value,
@@ -174,7 +174,7 @@ void main() {
             .noRetry()
             .noAuth()
             .withTimeout(const Duration(seconds: 5));
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         expect(_retryKind(overrides!.retry), equals('disabled'));
         expect(_authKind(overrides.auth), equals('disabled'));
         expect(_timeoutKind(overrides.timeout), equals('total'));
@@ -189,7 +189,7 @@ void main() {
             .resilience(const ResilienceOverrides(
               retry: RetryOverride.attempts(7),
             ),);
-        final overrides = overridesFor(opts as RequestOptions);
+        final overrides = overridesFor(opts);
         // resilience() replaces the entire bag
         expect(_retryKind(overrides!.retry), equals('attempts'));
         expect(overrides.auth, isNull);

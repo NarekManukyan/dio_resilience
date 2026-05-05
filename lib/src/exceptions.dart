@@ -48,6 +48,22 @@ final class RateLimitException extends DioResilienceException {
   }) : super(message: 'Local rate limit exceeded.');
 }
 
+/// Thrown by [RateLimiterStrategy] when a token cannot be acquired.
+///
+/// In [RateLimitMode.fail] mode this is thrown immediately when no token is
+/// available. In [RateLimitMode.wait] mode it is thrown when the pipeline's
+/// total elapsed budget would be exceeded before a token becomes available.
+final class RateLimitExceededException extends DioResilienceException {
+  /// The rate-limit key that triggered this exception (e.g. the host name).
+  final String key;
+
+  RateLimitExceededException({
+    required super.requestOptions,
+    required this.key,
+    super.stackTrace,
+  }) : super(message: 'Rate limit exceeded for key "$key".');
+}
+
 /// Thrown when the pipeline's total time budget is exhausted across attempts.
 final class PipelineTimeoutException extends DioResilienceException {
   final Duration budget;

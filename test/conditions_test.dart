@@ -400,7 +400,7 @@ RetryEvaluation _mkEval({
   int attemptNumber = 1,
   Duration elapsed = Duration.zero,
 }) {
-  final response = statusCode != null
+  final response = (statusCode != null || responseBody != null)
       ? Response<Object?>(
           requestOptions: _mkRequestOptions(),
           statusCode: statusCode,

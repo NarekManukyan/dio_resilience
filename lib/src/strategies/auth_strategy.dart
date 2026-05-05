@@ -270,8 +270,15 @@ class AuthStrategy extends ResilienceStrategy {
         stackTrace: StackTrace.current,
       );
 
+      // Suppress "unhandled" errors when this completer has no concurrent
+      // waiters — the originating caller below will throw the exception
+      // synchronously, and any single-flight waiters attach via
+      // `await _refreshInFlight!.future` which installs its own listener.
+      unawaited(_refreshInFlight!.future.catchError((_) {}));
       _refreshInFlight!.completeError(exception);
-      rethrow;
+      // Throw the typed RefreshFailedException — not the inner cause — so
+      // callers can pattern-match on the concrete exception type.
+      throw exception;
     } finally {
       _refreshInFlight = null;
     }

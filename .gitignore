@@ -9,3 +9,5 @@ coverage/
 .idea/
 .vscode/
 *.iml
+.DS_Store
+firebase-debug.log

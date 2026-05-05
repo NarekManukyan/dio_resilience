@@ -119,28 +119,87 @@ All conditions are combinable with `.or()`, `.and()`, `.negated()`.
 - `TimeoutOverride.total(Duration)` — Set total budget.
 - `TimeoutOverride.perAttempt(Duration)` — Set per-attempt budget.
 
-## What's in v0.1 vs v0.2
+## Strategies
 
-**v0.1** (current):
+| Strategy | Purpose | Builder |
+|----------|---------|---------|
+| Auth | OAuth/JWT injection + single-flight refresh, multi-account, `AuthState` stream | `.auth(...)` |
+| Rate limit | Token-bucket or sliding-window throttle, per-host or custom key | `.rateLimit(...)` |
+| Circuit breaker | Closed/open/half-open with rolling failure window and cooldown | `.circuitBreaker(...)` |
+| Hedging | Speculative parallel requests; first success wins | `.hedging(...)` |
+| Retry | Constant / linear / exponential / exponential-jitter backoff, `Retry-After` aware | `.retry(...)` |
+| Timeout | Per-attempt and total-budget enforcement | `.timeout(...)` |
+| Fallback | Canned response or alternate endpoint on terminal failure | `.fallback(...)` |
 
-- Auth strategy: single-flight token refresh, multi-account support, AuthState stream.
-- Retry strategy: all backoff variants (constant, linear, exponential, exponential-jitter), Retry-After header support.
-- Timeout strategy: per-attempt and total budget enforcement.
-- Typed override system: ResilienceOverrides + sealed RetryOverride / AuthOverride / TimeoutOverride.
-- RetryCondition predicates and combinators.
-- Options extensions for per-request overrides.
+Execution order is fixed: `auth → rateLimit → circuit → hedging → retry → timeout → fallback`. Strategies coordinate via a shared `PipelineContext` so retry won't fire while auth is mid-refresh, hedging counts as a single attempt for retry, and total-timeout breaches surface as a typed `PipelineTimeoutException`.
 
-**v0.2** (planned):
+## Hedging
 
-- Circuit breaker strategy.
-- Rate limiter strategy.
-- Hedging strategy (speculative retries).
-- Fallback strategy (fallback responses or endpoints).
+```dart
+ResiliencePipeline.builder()
+  .hedging(
+    maxParallel: 2,
+    delay: const Duration(milliseconds: 100),
+    // Default: only GET/HEAD. Override for idempotent POSTs.
+    shouldHedge: (req) => req.method == 'GET',
+  )
+  .build();
+```
+
+Per-request: `Options().noHedging()`, `Options().hedge(max: 3, delay: Duration(milliseconds: 50))`.
+
+## Circuit breaker
+
+```dart
+ResiliencePipeline.builder()
+  .circuitBreaker(
+    failureThreshold: 5,
+    windowDuration: const Duration(seconds: 60),
+    cooldown: const Duration(seconds: 30),
+    halfOpenProbes: 1,
+    keyExtractor: (req) => req.uri.host, // default
+  )
+  .build();
+```
+
+Per-request: `Options().noCircuit()`, `Options().circuitKey('user-api')`. Throws `CircuitOpenException` (a `DioException` subtype) when the breaker is open.
+
+## Rate limit
+
+```dart
+ResiliencePipeline.builder()
+  .rateLimit(
+    algorithm: RateLimitAlgorithm.tokenBucket(ratePerSecond: 10, burst: 20),
+    mode: RateLimitMode.wait, // or .fail
+  )
+  .build();
+```
+
+Per-request: `Options().noRateLimit()`, `Options().rateLimitKey('user:42')`. Throws `RateLimitExceededException` in `fail` mode or when the wait would exceed the total timeout budget.
+
+## Fallback
+
+```dart
+ResiliencePipeline.builder()
+  .fallback(handlers: [
+    FallbackHandler.predicate(
+      (e) => e.response?.statusCode == 503,
+      FallbackHandler.endpoint('/cached/users/me'),
+    ),
+    FallbackHandler.response(
+      (e, req) => Response(requestOptions: req, statusCode: 200, data: const {}),
+    ),
+  ])
+  .build();
+```
+
+Per-request: `Options().noFallback()`, `Options().fallbackTo(cachedResponse)`, `Options().fallbackHandlers([...])`.
 
 ## Roadmap
 
-- v0.2: Circuit breaker, rate limiter, hedging, fallback.
-- Testing improvements and real-world feedback.
+- Pluggable storage for circuit / rate-limit state (Redis, Hive).
+- Metrics hooks (per-strategy counters, latency histograms).
+- More backoff algorithms; SetCookie / Retry-After semantics for additional headers.
 
 ## License
 

@@ -11,10 +11,27 @@ import 'token.dart';
 /// collisions with other packages' `extra` keys vanishingly unlikely.
 const _kResilienceKey = '__dio_resilience_overrides__';
 
-/// Reads the per-request overrides from a [RequestOptions], or null if none
-/// were attached. Used internally by strategies.
-ResilienceOverrides? overridesFor(RequestOptions request) {
-  final v = request.extra[_kResilienceKey];
+/// Internal key used to stash a per-request rate-limit bucket key override
+/// inside [Options.extra]. Read by [RateLimiterStrategy] during `onRequest`.
+const String kRateLimitKeyOverride = '__dio_resilience_rate_limit_key__';
+
+/// Internal key used to stash a per-request circuit key override
+/// inside [Options.extra]. Read by [CircuitBreakerStrategy] during `onRequest`.
+const String kCircuitKeyOverride = '_circuit_key_override';
+
+/// Reads the per-request overrides from a [RequestOptions] or [Options], or
+/// null if none were attached. Used internally by strategies and externally
+/// by tests / advanced users that need to inspect what an `Options` chain
+/// resolved to before the request fires.
+ResilienceOverrides? overridesFor(Object request) {
+  final extra = switch (request) {
+    RequestOptions r => r.extra,
+    Options o => o.extra,
+    _ => throw ArgumentError(
+        'overridesFor() expects Options or RequestOptions, got ${request.runtimeType}',
+      ),
+  };
+  final v = extra?[_kResilienceKey];
   return v is ResilienceOverrides ? v : null;
 }
 
@@ -105,6 +122,126 @@ extension ResilienceShortcuts on Options {
             rateLimit: current?.rateLimit,
             hedging: current?.hedging,
             fallback: current?.fallback,
+          ),);
+
+  /// Disable rate limiting for this single request. Equivalent to setting
+  /// `rateLimit: RateLimitOverride.disabled`.
+  Options noRateLimit() => _merge((current) => ResilienceOverrides(
+        retry: current?.retry,
+        auth: current?.auth,
+        timeout: current?.timeout,
+        circuit: current?.circuit,
+        rateLimit: RateLimitOverride.disabled,
+        hedging: current?.hedging,
+        fallback: current?.fallback,
+      ),);
+
+  /// Override the rate-limit bucket key for this request. The [key] replaces
+  /// whatever the strategy's `keyExtractor` would have produced, allowing
+  /// fine-grained per-endpoint or per-user bucketing at the call site.
+  ///
+  /// The key is stored in [Options.extra] under a well-known internal key;
+  /// [RateLimiterStrategy] reads it during `onRequest`.
+  Options rateLimitKey(String key) {
+    return copyWith(extra: {
+      if (extra != null) ...extra!,
+      kRateLimitKeyOverride: key,
+    },);
+  }
+
+  /// Disable hedging for this request.
+  Options noHedging() => _merge((current) => ResilienceOverrides(
+        retry: current?.retry,
+        auth: current?.auth,
+        timeout: current?.timeout,
+        circuit: current?.circuit,
+        rateLimit: current?.rateLimit,
+        hedging: HedgingOverride.disabled,
+        fallback: current?.fallback,
+      ),);
+
+  /// Enable or tune hedging for this request.
+  ///
+  /// [max] overrides the maximum number of parallel hedged branches.
+  /// [delay] overrides the inter-hedge delay.
+  /// Provide [max] or [delay] (or both). When both are provided the resulting
+  /// override only stores one; chain two calls for independent overrides.
+  Options hedge({int? max, Duration? delay}) {
+    assert(
+      max != null || delay != null,
+      'hedge() requires at least one of max or delay',
+    );
+    return _merge((current) => ResilienceOverrides(
+          retry: current?.retry,
+          auth: current?.auth,
+          timeout: current?.timeout,
+          circuit: current?.circuit,
+          rateLimit: current?.rateLimit,
+          hedging: max != null
+              ? HedgingOverride.maxParallel(max)
+              : HedgingOverride.delay(delay!),
+          fallback: current?.fallback,
+        ),);
+  }
+
+  /// Disable the circuit breaker for this single request. Equivalent to
+  /// setting `circuit: CircuitOverride.disabled`.
+  Options noCircuit() => _merge((current) => ResilienceOverrides(
+        retry: current?.retry,
+        auth: current?.auth,
+        timeout: current?.timeout,
+        circuit: CircuitOverride.disabled,
+        rateLimit: current?.rateLimit,
+        hedging: current?.hedging,
+        fallback: current?.fallback,
+      ),);
+
+  /// Pin this request to a specific circuit key, bypassing the strategy's
+  /// default per-host keying. Useful when multiple paths on the same host
+  /// should trip independently, or multiple hosts should share one circuit.
+  Options circuitKey(String key) {
+    return copyWith(extra: {
+      if (extra != null) ...extra!,
+      kCircuitKeyOverride: key,
+    },);
+  }
+
+  /// Disable the fallback strategy for this single request.
+  Options noFallback() => _merge((current) => ResilienceOverrides(
+        retry: current?.retry,
+        auth: current?.auth,
+        timeout: current?.timeout,
+        circuit: current?.circuit,
+        rateLimit: current?.rateLimit,
+        hedging: current?.hedging,
+        fallback: FallbackOverride.disabled,
+      ),);
+
+  /// Substitute a canned [response] if this request fails.
+  ///
+  /// Equivalent to `FallbackOverride.response((_) => response)` but without
+  /// needing to construct a full [ResilienceOverrides] bag.
+  Options fallbackTo(Response<dynamic> response) =>
+      _merge((current) => ResilienceOverrides(
+            retry: current?.retry,
+            auth: current?.auth,
+            timeout: current?.timeout,
+            circuit: current?.circuit,
+            rateLimit: current?.rateLimit,
+            hedging: current?.hedging,
+            fallback: FallbackOverride.response((_) => response),
+          ),);
+
+  /// Override the fallback handler list for this request.
+  Options fallbackHandlers(List<FallbackHandler> handlers) =>
+      _merge((current) => ResilienceOverrides(
+            retry: current?.retry,
+            auth: current?.auth,
+            timeout: current?.timeout,
+            circuit: current?.circuit,
+            rateLimit: current?.rateLimit,
+            hedging: current?.hedging,
+            fallback: FallbackOverride.handlers(handlers),
           ),);
 
   Options _merge(
