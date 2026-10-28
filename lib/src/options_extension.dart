@@ -57,6 +57,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: current?.hedging,
         fallback: current?.fallback,
+        challenge: current?.challenge,
       ),);
 
   Options noAuth() => _merge((current) => ResilienceOverrides(
@@ -67,6 +68,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: current?.hedging,
         fallback: current?.fallback,
+        challenge: current?.challenge,
       ),);
 
   Options withTimeout(Duration d) => _merge((current) => ResilienceOverrides(
@@ -77,6 +79,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: current?.hedging,
         fallback: current?.fallback,
+        challenge: current?.challenge,
       ),);
 
   Options withAccount(AccountId id) => _merge((current) => ResilienceOverrides(
@@ -87,6 +90,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: current?.hedging,
         fallback: current?.fallback,
+        challenge: current?.challenge,
       ),);
 
   Options retryAttempts(int n) => _merge((current) => ResilienceOverrides(
@@ -97,6 +101,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: current?.hedging,
         fallback: current?.fallback,
+        challenge: current?.challenge,
       ),);
 
   Options dontRetryWhen(List<RetryCondition> conditions) =>
@@ -108,6 +113,7 @@ extension ResilienceShortcuts on Options {
             rateLimit: current?.rateLimit,
             hedging: current?.hedging,
             fallback: current?.fallback,
+            challenge: current?.challenge,
           ),);
 
   Options dontRetryOn(Set<int> statusCodes) =>
@@ -122,6 +128,7 @@ extension ResilienceShortcuts on Options {
             rateLimit: current?.rateLimit,
             hedging: current?.hedging,
             fallback: current?.fallback,
+            challenge: current?.challenge,
           ),);
 
   /// Disable rate limiting for this single request. Equivalent to setting
@@ -134,6 +141,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: RateLimitOverride.disabled,
         hedging: current?.hedging,
         fallback: current?.fallback,
+        challenge: current?.challenge,
       ),);
 
   /// Override the rate-limit bucket key for this request. The [key] replaces
@@ -158,6 +166,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: HedgingOverride.disabled,
         fallback: current?.fallback,
+        challenge: current?.challenge,
       ),);
 
   /// Enable or tune hedging for this request.
@@ -181,6 +190,7 @@ extension ResilienceShortcuts on Options {
               ? HedgingOverride.maxParallel(max)
               : HedgingOverride.delay(delay!),
           fallback: current?.fallback,
+          challenge: current?.challenge,
         ),);
   }
 
@@ -194,6 +204,21 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: current?.hedging,
         fallback: current?.fallback,
+        challenge: current?.challenge,
+      ),);
+
+  /// Disable the challenge strategy for this single request. Matched signals
+  /// fall through to retry/fallback as if no challenge strategy were
+  /// configured. Equivalent to setting `challenge: ChallengeOverride.disabled`.
+  Options noChallenge() => _merge((current) => ResilienceOverrides(
+        retry: current?.retry,
+        auth: current?.auth,
+        timeout: current?.timeout,
+        circuit: current?.circuit,
+        rateLimit: current?.rateLimit,
+        hedging: current?.hedging,
+        fallback: current?.fallback,
+        challenge: ChallengeOverride.disabled,
       ),);
 
   /// Pin this request to a specific circuit key, bypassing the strategy's
@@ -215,6 +240,7 @@ extension ResilienceShortcuts on Options {
         rateLimit: current?.rateLimit,
         hedging: current?.hedging,
         fallback: FallbackOverride.disabled,
+        challenge: current?.challenge,
       ),);
 
   /// Substitute a canned [response] if this request fails.
@@ -230,6 +256,7 @@ extension ResilienceShortcuts on Options {
             rateLimit: current?.rateLimit,
             hedging: current?.hedging,
             fallback: FallbackOverride.response((_) => response),
+            challenge: current?.challenge,
           ),);
 
   /// Override the fallback handler list for this request.
@@ -242,6 +269,7 @@ extension ResilienceShortcuts on Options {
             rateLimit: current?.rateLimit,
             hedging: current?.hedging,
             fallback: FallbackOverride.handlers(handlers),
+            challenge: current?.challenge,
           ),);
 
   Options _merge(

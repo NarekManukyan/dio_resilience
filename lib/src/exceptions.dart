@@ -75,6 +75,35 @@ final class PipelineTimeoutException extends DioResilienceException {
   }) : super(message: 'Pipeline timeout after ${budget.inMilliseconds}ms.');
 }
 
+/// Thrown when a [ChallengeStrategy] solver fails, times out, or the
+/// per-request challenge budget is exhausted.
+///
+/// Carries a [ChallengeFailureReason] discriminator so callers can
+/// distinguish solver throws from timeouts from budget exhaustion without
+/// inspecting the underlying [error] / [stackTrace].
+final class ChallengeFailedException extends DioResilienceException {
+  final ChallengeFailureReason reason;
+
+  ChallengeFailedException({
+    required super.requestOptions,
+    required this.reason,
+    super.error,
+    super.stackTrace,
+  }) : super(message: 'Challenge failed: ${reason.name}.');
+}
+
+/// Discriminator for [ChallengeFailedException].
+enum ChallengeFailureReason {
+  /// The solver callback threw (or completed with an error).
+  solverError,
+
+  /// The solver did not complete before [ChallengeConfig.solverTimeout].
+  solverTimeout,
+
+  /// `maxAttempts` re-challenges already fired for this request.
+  maxAttemptsExceeded,
+}
+
 /// Thrown when retries have been exhausted and no fallback produced a value.
 final class AllAttemptsExhaustedException extends DioResilienceException {
   final int attempts;

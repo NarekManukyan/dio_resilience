@@ -10,6 +10,7 @@ import 'storage/memory_token_storage.dart';
 import 'strategy.dart';
 import 'overrides.dart';
 import 'strategies/auth_strategy.dart';
+import 'strategies/challenge_strategy.dart';
 import 'strategies/circuit_breaker_strategy.dart';
 import 'strategies/fallback_strategy.dart';
 import 'strategies/hedging_strategy.dart';
@@ -251,6 +252,12 @@ final class ResiliencePipeline extends Interceptor {
         );
       }
 
+      // Pre-scan: if a ChallengeStrategy would match this error, stamp a
+      // flag on the context so sibling strategies (circuit breaker) can
+      // exclude it from failure accounting. Challenge-shaped responses are
+      // server-issued instructions, not backend failures.
+      _flagIfChallengeMatch(ctx, err);
+
       // Invoke each strategy's onError hook in order
       for (final strategy in _strategies) {
         final decision = await strategy.onError(ctx, err);
@@ -285,6 +292,23 @@ final class ResiliencePipeline extends Interceptor {
           type: DioExceptionType.unknown,
         ),
       );
+    }
+  }
+
+  /// Stamp `_in_challenge` on [ctx] if any [ChallengeStrategy] matches
+  /// [err]. Read by [CircuitBreakerStrategy] to skip failure accounting
+  /// for server-issued challenge responses.
+  void _flagIfChallengeMatch(PipelineContext ctx, DioException err) {
+    for (final strategy in _strategies) {
+      if (strategy is ChallengeStrategy) {
+        final signal = err.response != null
+            ? ChallengeOnResponse(err.response!)
+            : ChallengeOnError(err);
+        if (strategy.wouldMatch(signal)) {
+          ctx.meta['_in_challenge'] = true;
+          return;
+        }
+      }
     }
   }
 
@@ -399,6 +423,7 @@ class ResiliencePipelineBuilder {
   RateLimiterStrategy? _rateLimiterStrategy;
   CircuitBreakerStrategy? _circuitBreakerStrategy;
   HedgingStrategy? _hedgingStrategy;
+  ChallengeStrategy<dynamic>? _challengeStrategy;
   RetryStrategy? _retryStrategy;
   TimeoutStrategy? _timeoutStrategy;
   FallbackStrategy? _fallbackStrategy;
@@ -504,6 +529,25 @@ class ResiliencePipelineBuilder {
     return this;
   }
 
+  /// Configure challenge-response strategy.
+  ///
+  /// Handles server-issued challenges (CAPTCHA, MFA step-up, device
+  /// attestation) where the server returns a challenge-shaped response or
+  /// error and expects a solved proof token attached to a replay of the
+  /// original request.
+  ///
+  /// The [config] supplies the matcher (when to fire), solver (how to
+  /// produce a token), and applier (how to attach it). Generic over the
+  /// token type so callers can return whatever shape the applier needs.
+  ///
+  /// Pipeline placement: between **hedging** and **retry**, so a
+  /// challenge-shaped response is intercepted before the retry strategy
+  /// consumes its budget on blind replays.
+  ResiliencePipelineBuilder challenge<T>(ChallengeConfig<T> config) {
+    _challengeStrategy = ChallengeStrategy<T>(config);
+    return this;
+  }
+
   /// Configure retry strategy.
   ResiliencePipelineBuilder retry({
     int maxAttempts = 3,
@@ -566,13 +610,19 @@ class ResiliencePipelineBuilder {
   /// Build the pipeline.
   ///
   /// Strategy execution order:
-  /// auth → rateLimit → circuit → hedging → retry → timeout → **fallback**.
+  /// auth → rateLimit → circuit → hedging → **challenge** → retry → timeout → fallback.
+  ///
+  /// Challenge runs *before* retry so a challenge-shaped response (e.g.
+  /// 428 CAPTCHA) is intercepted and solved without consuming the retry
+  /// budget. After replay, if the request still fails for transient reasons,
+  /// retry kicks in normally on the replayed attempt.
   ResiliencePipeline build() {
     final strategies = <ResilienceStrategy>[
       if (_authStrategy != null) _authStrategy!,
       if (_rateLimiterStrategy != null) _rateLimiterStrategy!,
       if (_circuitBreakerStrategy != null) _circuitBreakerStrategy!,
       if (_hedgingStrategy != null) _hedgingStrategy!,
+      if (_challengeStrategy != null) _challengeStrategy!,
       if (_retryStrategy != null) _retryStrategy!,
       if (_timeoutStrategy != null) _timeoutStrategy!,
       // Fallback is always last — it only fires when no other strategy decided.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-05-08
+
+New strategy:
+
+- **Challenge**: pluggable challenge-response handler for server-issued proof flows (CAPTCHA, MFA step-up, device attestation, etc.). Configure with a matcher (when to fire), solver (produce token), and applier (attach to request) via `ChallengeConfig<T>`. Generic over token type so callers can return `String`, `Uint8List`, `Map<String, String>`, or any other shape the applier needs. Sealed `ChallengeSignal` (`ChallengeOnResponse` / `ChallengeOnError`) eliminates the `(Response?, DioException?)` dual-null ambiguity. Single-flight is **opt-in** (`singleFlight: false` by default) since most challenge tokens (CAPTCHA, TOTP) are single-use. Per-solve timeout and per-request `maxAttempts` recursion guard. Throws typed `ChallengeFailedException` with `ChallengeFailureReason` discriminator (`solverError` / `solverTimeout` / `maxAttemptsExceeded`). `ChallengeOverride.disabled` and `.noChallenge()` per-request opt-out.
+
+Pipeline:
+
+- Strategy execution order is now: `auth → rateLimit → circuit → hedging → challenge → retry → timeout → fallback`. Challenge runs **before** retry so a challenge-shaped response is intercepted and solved without consuming retry budget; the replayed request still gets normal retry coverage on transient failures after token attachment.
+- Circuit breaker no longer records failures for challenge-shaped responses. Server-issued challenges are instructions, not backend unavailability — counting them would prematurely trip the circuit during a CAPTCHA/MFA spike.
+
 ## 0.2.0 — 2026-05-05
 
 New strategies:

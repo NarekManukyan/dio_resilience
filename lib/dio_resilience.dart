@@ -15,6 +15,7 @@ export 'src/pipeline.dart';
 export 'src/pipeline_context.dart';
 export 'src/storage/memory_token_storage.dart';
 export 'src/strategies/auth_strategy.dart';
+export 'src/strategies/challenge_strategy.dart';
 export 'src/strategies/circuit_breaker_strategy.dart';
 export 'src/strategies/fallback_strategy.dart';
 export 'src/strategies/hedging_strategy.dart';

@@ -241,6 +241,11 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
     // rejected before the request was ever sent).
     if (error.error is CircuitOpenException) return null;
 
+    // Do not count challenge-shaped responses as failures. The server is
+    // instructing the client to solve a proof (CAPTCHA / MFA / attestation)
+    // and replay; this is not backend unavailability.
+    if (ctx.meta['_in_challenge'] == true) return null;
+
     final key = _keyFor(ctx.request);
     final state = _stateFor(key);
     final timestamp = now();

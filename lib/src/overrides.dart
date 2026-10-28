@@ -16,6 +16,7 @@ class ResilienceOverrides {
   final RateLimitOverride? rateLimit;
   final HedgingOverride? hedging;
   final FallbackOverride? fallback;
+  final ChallengeOverride? challenge;
 
   const ResilienceOverrides({
     this.retry,
@@ -25,7 +26,24 @@ class ResilienceOverrides {
     this.rateLimit,
     this.hedging,
     this.fallback,
+    this.challenge,
   });
+}
+
+// ===================== Challenge =====================
+
+/// Per-request override for the challenge strategy.
+sealed class ChallengeOverride {
+  const ChallengeOverride();
+
+  /// Disable the challenge strategy for this request — matched signals fall
+  /// through to retry/fallback as if no challenge strategy were configured.
+  static const ChallengeOverride disabled = ChallengeDisabled();
+}
+
+/// "Skip challenge solve for this request" — see [ChallengeOverride.disabled].
+final class ChallengeDisabled extends ChallengeOverride {
+  const ChallengeDisabled();
 }
 
 // ===================== Retry =====================
