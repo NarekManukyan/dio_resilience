@@ -92,7 +92,8 @@ void main() {
         for (final cause in <Object>[
           const SocketException('Connection reset by peer'),
           const HttpException(
-              'Connection closed before full header was received'),
+            'Connection closed before full header was received',
+          ),
           const HandshakeException('Connection terminated during handshake'),
         ]) {
           final exception = DioException(
@@ -199,8 +200,9 @@ void main() {
     group('dioMessageContains', () {
       test('matches substring in message case-insensitive by default', () {
         const condition = RetryCondition.dioMessageContains(
-            'insufficient_funds',
-            caseSensitive: false);
+          'insufficient_funds',
+          caseSensitive: false,
+        );
         final exception = DioException(
           requestOptions: _mkRequestOptions(),
           message: 'Error: INSUFFICIENT_FUNDS encountered',
@@ -215,8 +217,9 @@ void main() {
 
       test('respects case-sensitive matching', () {
         const condition = RetryCondition.dioMessageContains(
-            'insufficient_funds',
-            caseSensitive: true);
+          'insufficient_funds',
+          caseSensitive: true,
+        );
         final exception = DioException(
           requestOptions: _mkRequestOptions(),
           message: 'Error: INSUFFICIENT_FUNDS encountered',
@@ -231,8 +234,9 @@ void main() {
 
       test('matches case-sensitive when cases match', () {
         const condition = RetryCondition.dioMessageContains(
-            'insufficient_funds',
-            caseSensitive: true);
+          'insufficient_funds',
+          caseSensitive: true,
+        );
         final exception = DioException(
           requestOptions: _mkRequestOptions(),
           message: 'Error: insufficient_funds encountered',
@@ -364,10 +368,14 @@ void main() {
         final condition = RetryCondition.predicate(
           (e) => e.statusCode == 503 && e.attemptNumber <= 3,
         );
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
-            isTrue);
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)),
-            isFalse);
+        expect(
+          condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
+          isTrue,
+        );
+        expect(
+          condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)),
+          isFalse,
+        );
       });
     });
 
@@ -391,16 +399,20 @@ void main() {
         final condition = const RetryCondition.statusBetween(500, 599).and(
           RetryCondition.predicate((e) => e.attemptNumber < 3),
         );
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
-            isTrue);
+        expect(
+          condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
+          isTrue,
+        );
       });
 
       test('returns false when one condition fails', () {
         final condition = const RetryCondition.statusBetween(500, 599).and(
           RetryCondition.predicate((e) => e.attemptNumber < 3),
         );
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)),
-            isFalse);
+        expect(
+          condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)),
+          isFalse,
+        );
       });
     });
 
@@ -436,10 +448,14 @@ void main() {
           const RetryCondition.statusBetween(500, 599),
           RetryCondition.predicate((e) => e.attemptNumber <= 2),
         ]);
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
-            isTrue);
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 3)),
-            isFalse);
+        expect(
+          condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
+          isTrue,
+        );
+        expect(
+          condition.matches(_mkEval(statusCode: 503, attemptNumber: 3)),
+          isFalse,
+        );
       });
 
       test('empty list always matches', () {

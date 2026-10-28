@@ -324,8 +324,10 @@ void main() {
       // First probe — allowed, transitions to half-open.
       final probeCtx = PipelineContext(req);
       await multiProbeStrategy.onRequest(probeCtx);
-      expect(multiProbeStrategy.phaseFor('api.example.com'),
-          CircuitPhase.halfOpen);
+      expect(
+        multiProbeStrategy.phaseFor('api.example.com'),
+        CircuitPhase.halfOpen,
+      );
 
       // Second request before the probe resolves — should be rejected.
       final secondCtx = PipelineContext(req);
@@ -388,7 +390,9 @@ void main() {
       expect((t as CircuitThreshold).count, equals(10));
       expect(c, isA<CircuitCooldown>());
       expect(
-          (c as CircuitCooldown).duration, equals(const Duration(seconds: 45)));
+        (c as CircuitCooldown).duration,
+        equals(const Duration(seconds: 45)),
+      );
     });
 
     // ------------------------------------------------------------------
@@ -400,6 +404,19 @@ void main() {
 
       strategy.resetAll();
       expect(strategy.phaseFor('api.example.com'), CircuitPhase.closed);
+    });
+
+    test('CircuitOverride.threshold trips at the request threshold', () async {
+      final req = RequestOptions(
+        path: 'https://api.example.com/data',
+        extra: {
+          kResilienceOverridesKey: const ResilienceOverrides(
+            circuit: CircuitOverride.threshold(1),
+          ),
+        },
+      );
+      await _driveFailures(strategy, req, 1);
+      expect(strategy.phaseFor('api.example.com'), CircuitPhase.open);
     });
   });
 }

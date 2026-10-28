@@ -408,7 +408,9 @@ final class ResiliencePipeline extends Interceptor {
   void _beginAttempt(PipelineContext ctx) {
     ctx.attemptInFlight = true;
     if (ctx.totalBudget == null) return;
-    final token = CancelToken();
+    // Dio builds the cancellation error from the token's requestOptions; it
+    // must point at this request so the pipeline finds its context.
+    final token = CancelToken()..requestOptions = ctx.request;
     final caller = ctx.callerToken;
     if (caller != null) {
       unawaited(

@@ -209,7 +209,7 @@ void main() {
         statusCode: 429,
         requestOptions: request,
         headers: Headers.fromMap({
-          'retry-after': ['60']
+          'retry-after': ['60'],
         }),
       );
       final error = DioException(
@@ -240,7 +240,7 @@ void main() {
         statusCode: 503,
         requestOptions: request,
         headers: Headers.fromMap({
-          'retry-after': ['600']
+          'retry-after': ['600'],
         }),
       );
       final error = DioException(

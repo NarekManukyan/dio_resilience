@@ -177,7 +177,7 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
 
       case CircuitPhase.open:
         final elapsed = timestamp.difference(state.openedAt!);
-        if (elapsed >= cooldown) {
+        if (elapsed >= _cooldownFor(ctx.request)) {
           // Cooldown has passed: allow one probe batch by entering half-open.
           _move(key, state, state.enterHalfOpen);
           state.probesDispatched++;
@@ -269,7 +269,7 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
       case CircuitPhase.closed:
         state.recordFailure(timestamp);
         final count = state.failureCount(windowDuration, timestamp);
-        if (count >= failureThreshold) {
+        if (count >= _thresholdFor(ctx.request)) {
           _move(key, state, () => state.trip(timestamp));
         }
       case CircuitPhase.halfOpen:
@@ -289,6 +289,20 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
   /// Retrieve (or lazily create) the state object for [key].
   _CircuitState _stateFor(String key) =>
       _states.putIfAbsent(key, _CircuitState.new);
+
+  /// [failureThreshold], or this request's `CircuitOverride.threshold`.
+  int _thresholdFor(RequestOptions request) =>
+      switch (overridesFor(request)?.circuit) {
+        CircuitThreshold(:final count) => count,
+        _ => failureThreshold,
+      };
+
+  /// [cooldown], or this request's `CircuitOverride.cooldown`.
+  Duration _cooldownFor(RequestOptions request) =>
+      switch (overridesFor(request)?.circuit) {
+        CircuitCooldown(:final duration) => duration,
+        _ => cooldown,
+      };
 
   /// Gives back the half-open probe slot [ctx] took, if it took one.
   void _releaseProbe(PipelineContext ctx) {
