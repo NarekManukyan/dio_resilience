@@ -133,13 +133,18 @@ final class ResiliencePipeline extends Interceptor {
     }
 
     // A replay re-sends the same RequestOptions, so it finds its context
-    // here and keeps the attempt counter and elapsed time. Anything else (a
-    // first send, or a finished request's options sent again) starts fresh.
+    // here and keeps the attempt counter and elapsed time. An interceptor
+    // ahead of the pipeline may hand the replay on as a copy (which keeps
+    // `extra`); it is still that replay. Anything else (a first send, or a
+    // finished request's options sent again) starts fresh.
     final existing = options.extra[_kPipelineContextKey];
     final isReplay = existing is PipelineContext &&
-        identical(existing.request, options) &&
-        !existing.settled;
+        !existing.settled &&
+        (identical(existing.request, options) || existing.replayInFlight);
     final ctx = isReplay ? existing : PipelineContext(options);
+    if (isReplay && !identical(ctx.request, options)) {
+      ctx.rebind(options);
+    }
     if (!isReplay) {
       options.extra[_kPipelineContextKey] = ctx;
       ctx.callerToken = options.cancelToken;
@@ -152,6 +157,13 @@ final class ResiliencePipeline extends Interceptor {
     try {
       for (final strategy in _strategies) {
         await strategy.onRequest(ctx);
+        // Cancelled while a strategy waited (a refresh, a rate limit): Dio
+        // already failed the request. Send nothing, and let the strategies
+        // give back what they took.
+        if (ctx.settled || (ctx.callerToken?.isCancelled ?? false)) {
+          if (ctx.settled) _runOnEnd(ctx);
+          return;
+        }
       }
       // A strategy may have waited (rate limit, token refresh) past the end
       // of the budget; don't send an attempt that has no time left.
@@ -188,8 +200,11 @@ final class ResiliencePipeline extends Interceptor {
       } finally {
         _endAttempt(ctx);
       }
+      // The winner was sent as a flagged copy; hand the caller its own
+      // options, so a later `fetch` of them runs the strategies again.
+      response.requestOptions = options;
       await _runOnResponse(ctx, response);
-      if (!ctx.replayInFlight) ctx.settle();
+      if (!ctx.replayInFlight) _finish(ctx);
       handler.resolve(response);
     } catch (e, st) {
       _endAttempt(ctx);
@@ -225,7 +240,7 @@ final class ResiliencePipeline extends Interceptor {
         true,
       );
     }
-    if (!ctx.replayInFlight) ctx.settle();
+    if (!ctx.replayInFlight) _finish(ctx);
     handler.next(response);
   }
 
@@ -253,6 +268,24 @@ final class ResiliencePipeline extends Interceptor {
       return handler.reject(err);
     }
     await _settle(ctx, err, handler);
+  }
+
+  /// Ends the request: stops its deadline and runs every strategy's
+  /// `onEnd`.
+  void _finish(PipelineContext ctx) {
+    if (ctx.settled) return;
+    ctx.settle();
+    _runOnEnd(ctx);
+  }
+
+  void _runOnEnd(PipelineContext ctx) {
+    for (final strategy in _strategies) {
+      try {
+        strategy.onEnd(ctx);
+      } catch (_) {
+        // A strategy's clean-up must not change the request's outcome.
+      }
+    }
   }
 
   /// Runs every strategy's `onResponse`, after asking the challenge strategy
@@ -288,11 +321,11 @@ final class ResiliencePipeline extends Interceptor {
               response: response,
             ),
           );
-          ctx.settle();
+          _finish(ctx);
           return handler.resolve(response);
 
         case _GiveUp(:final error):
-          ctx.settle();
+          _finish(ctx);
           if (error.type != DioExceptionType.cancel) {
             _emit(GaveUpEvent(request: ctx.request, error: error));
           }
@@ -314,7 +347,7 @@ final class ResiliencePipeline extends Interceptor {
           if (delay > Duration.zero) {
             final cancelled = await _wait(ctx, delay);
             if (cancelled != null) {
-              ctx.settle();
+              _finish(ctx);
               return handler.next(cancelled);
             }
           }
@@ -322,7 +355,7 @@ final class ResiliencePipeline extends Interceptor {
           ctx.replayInFlight = true;
           try {
             final response = await _dio!.fetch<dynamic>(ctx.request);
-            ctx.settle();
+            _finish(ctx);
             return handler.resolve(response);
           } catch (e, st) {
             err = _asDioException(e, st, ctx.request);
@@ -341,6 +374,7 @@ final class ResiliencePipeline extends Interceptor {
       err = PipelineTimeoutException(
         requestOptions: ctx.request,
         budget: ctx.totalBudget ?? Duration.zero,
+        cutAttempt: true,
         stackTrace: err.stackTrace,
       );
     }

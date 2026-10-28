@@ -85,6 +85,10 @@ final class AuthRejection {
 /// second `401` ends it instead of refreshing forever.
 const String _kRefreshedKey = '__dio_resilience_auth_refreshed__';
 
+/// Context key marking a request that carries a token this strategy put in
+/// its `Authorization` header.
+const String _kInjectedKey = '__dio_resilience_auth_injected__';
+
 /// Strategy that manages OAuth/JWT token injection and refresh.
 ///
 /// Injects the access token as `Authorization: Bearer <token>` (or custom
@@ -157,6 +161,12 @@ class AuthStrategy extends ResilienceStrategy {
   /// In-flight refresh per account (null: the [storage] session).
   final Map<AccountId?, Future<TokenPair>> _refreshes = {};
 
+  /// The last finished refresh per account: the access token it replaced
+  /// and the pair that replaced it. A request that read the old pair before
+  /// that refresh wrote the new one gets the new pair instead of a second
+  /// refresh, which a rotating refresh token would reject.
+  final Map<AccountId?, ({String? from, TokenPair to})> _lastRefresh = {};
+
   @override
   String get name => 'auth';
 
@@ -188,7 +198,9 @@ class AuthStrategy extends ResilienceStrategy {
   /// Manually log out (clears storage and emits forcedLogout). With
   /// [accountId] and an [accountStorage], clears only that account.
   Future<void> logout({AccountId? accountId}) async {
-    await _clear(_accountKey(accountId));
+    final account = _accountKey(accountId);
+    _lastRefresh.remove(account);
+    await _clear(account);
     _emitAuthState(AuthState.forcedLogout);
   }
 
@@ -199,6 +211,10 @@ class AuthStrategy extends ResilienceStrategy {
     final account = _accountKey(_overrideAccount(ctx.request));
     var pair = await _read(account);
     if (pair == null) {
+      // Signed out since an earlier attempt: don't resend that token.
+      if (ctx.meta.remove(_kInjectedKey) == true) {
+        ctx.request.headers.remove('Authorization');
+      }
       _emitAuthState(AuthState.unauthenticated);
       onUnauthenticated?.call();
       return;
@@ -231,6 +247,7 @@ class AuthStrategy extends ResilienceStrategy {
     }
 
     ctx.request.headers['Authorization'] = '$scheme ${pair.access}';
+    ctx.meta[_kInjectedKey] = true;
     _emitAuthState(AuthState.authenticated);
   }
 
@@ -277,7 +294,9 @@ class AuthStrategy extends ResilienceStrategy {
     }
 
     final stored = await _read(account);
-    if (sent != null && stored != null && stored.access != sent) {
+    final replaced = _lastRefresh[account]?.from;
+    if (sent != null &&
+        ((stored != null && stored.access != sent) || replaced == sent)) {
       // Another request refreshed the token while this one was in flight.
       return const StrategyDecision.replay(countsAsAttempt: false);
     }
@@ -305,6 +324,12 @@ class AuthStrategy extends ResilienceStrategy {
     final inFlight = _refreshes[account];
     if (inFlight != null) return inFlight;
 
+    final last = _lastRefresh[account];
+    if (last != null && current != null && current.access == last.from) {
+      // Already refreshed away from this token; [current] was a stale read.
+      return Future.value(last.to);
+    }
+
     final refresh = _runRefresh(account, current);
     _refreshes[account] = refresh;
     unawaited(
@@ -328,6 +353,7 @@ class AuthStrategy extends ResilienceStrategy {
         throw StateError('refreshToken returned null');
       }
       await _write(account, pair);
+      _lastRefresh[account] = (from: current?.access, to: pair);
       _emitAuthState(AuthState.authenticated);
       return pair;
     } catch (_) {

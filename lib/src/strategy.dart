@@ -67,6 +67,12 @@ abstract class ResilienceStrategy {
   /// Called before each request attempt is dispatched.
   Future<void> onRequest(PipelineContext ctx) async {}
 
+  /// Called when the request has finished, however it ended (a response, a
+  /// failure, a cancellation). Give back here anything [onRequest] took that
+  /// no outcome released, such as a circuit breaker's half-open probe slot.
+  /// May be called more than once for a request; make it idempotent.
+  void onEnd(PipelineContext ctx) {}
+
   /// Called after a response is received successfully.
   Future<void> onResponse(
     PipelineContext ctx,

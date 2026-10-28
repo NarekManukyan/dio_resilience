@@ -43,9 +43,20 @@ change. Read **Breaking changes** before upgrading.
 - **`RateLimitException` (never thrown) is removed**; use
   `RateLimitExceededException`.
 - **`RetryStrategy` has no `const` constructor** anymore (it takes a clock).
+- **`ChallengeFailedException` is a new subtype of the sealed
+  `DioResilienceException`**, so an exhaustive `switch` over it needs a new
+  case.
+- **`ResilienceStrategy` has new hooks, `onStart` and `onEnd`.** A class that
+  `extends` it is unaffected; one that `implements` it must add them.
+- **`PipelineContext.request` is a getter**: an interceptor ahead of the
+  pipeline that hands a replay on as a copy moves the context to that copy.
 
 ### Fixes
 
+- **A replay handed on as a copy is still a replay.** An interceptor ahead of
+  the pipeline that calls `handler.next(options.copyWith(...))` made every
+  replay look like a new request, with a fresh retry budget: a server that
+  always failed was retried without end.
 - **Retries no longer nest.** Each replay used to run inside the previous
   attempt's error handler, so interceptors added after the pipeline saw the
   final error once per attempt. The pipeline now replays in one loop and
@@ -66,7 +77,11 @@ change. Read **Breaking changes** before upgrading.
   replays with the new token instead of refreshing again; a request waiting on
   a failed refresh gets an exception about its own request; an already
   expired token is refreshed before sending; a failed preemptive refresh
-  surfaces as `RefreshFailedException`; refresh is single-flight per account.
+  surfaces as `RefreshFailedException`; refresh is single-flight per account;
+  a request that read the old token just before a refresh finished reuses
+  that refresh instead of starting a second one (which a rotating refresh
+  token would reject); a retry after sign-out no longer resends the old
+  token.
 - **Retry waits honour cancellation**, and `Retry-After` HTTP-dates are parsed
   (all three RFC 9110 forms).
 - **Endpoint fallback no longer recurses** when the alternate endpoint fails
@@ -78,7 +93,10 @@ change. Read **Breaking changes** before upgrading.
   not counted as failures, a half-open probe that is cancelled gives its slot
   back (the circuit could stay half-open forever), a replay of a half-open
   probe (retry, refresh, solved challenge) is no longer rejected as a second
-  probe, a challenge-shaped 2xx no longer counts as a success, and
+  probe, a probe that ends without a result (cancelled, even while a strategy
+  was still waiting; a failed challenge) gives its slot back, an attempt the
+  deadline cut short counts as a failure, a challenge-shaped 2xx no longer
+  counts as a success, and
   `CircuitOverride.threshold` / `.cooldown` are honoured (they were ignored).
 - **Rate limiter:** sees the total budget on a request's first attempt (the
   timeout strategy used to set it too late), and a request cancelled while
@@ -118,8 +136,10 @@ change. Read **Breaking changes** before upgrading.
   `noChallenge`) for Retrofit's `@Extras` and other const-only call sites.
   `kResilienceOverridesKey` and `kSkipAuthKey` are public too.
 - **`retry(methods:, maxRetryAfter:)`** and `RetryOverride.policy(methods:)`.
-- **`ResilienceStrategy.onStart`**: a hook that runs once per request before
-  any `onRequest`.
+- **`ResilienceStrategy.onStart` and `onEnd`**: hooks that run once per
+  request, before any `onRequest` and after it has finished.
+- **`PipelineTimeoutException.cutAttempt`**: true when the deadline cancelled
+  an attempt on the wire.
 - **`PipelineContext.replayCount`, `remainingBudget`, `isBudgetExhausted`**.
 - **`ResilienceOverrides.copyWith`**, and `parseHttpDate`.
 

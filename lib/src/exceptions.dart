@@ -72,10 +72,15 @@ final class PipelineTimeoutException extends DioResilienceException {
   /// deadline cut an attempt short.
   final DioException? lastError;
 
+  /// True when the deadline cancelled an attempt that was on the wire: the
+  /// backend didn't answer in time.
+  final bool cutAttempt;
+
   PipelineTimeoutException({
     required super.requestOptions,
     required this.budget,
     this.lastError,
+    this.cutAttempt = false,
     super.stackTrace,
   }) : super(
           message: 'Pipeline timeout after ${budget.inMilliseconds}ms.',

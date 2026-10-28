@@ -7,10 +7,12 @@ import 'package:meta/meta.dart';
 /// request. Strategies read from and write to this so they can coordinate
 /// without knowing about each other.
 class PipelineContext {
-  /// The original request options. Strategies may mutate the headers map
+  /// The request options being sent. Strategies may mutate the headers map
   /// on this (e.g. to inject `Authorization`). Every replay re-sends this
-  /// same object.
-  final RequestOptions request;
+  /// object; if an interceptor ahead of the pipeline hands a replay on as a
+  /// copy, this becomes that copy.
+  RequestOptions get request => _request;
+  RequestOptions _request;
 
   /// Stopwatch tracking elapsed time across all attempts. Used by the
   /// timeout strategy to enforce a total budget.
@@ -37,7 +39,7 @@ class PipelineContext {
   /// Optional metadata attached by strategies for logging / metrics.
   final Map<String, Object?> meta = {};
 
-  PipelineContext(this.request);
+  PipelineContext(RequestOptions request) : _request = request;
 
   /// Time left of [totalBudget], or null without a budget. Never negative.
   Duration? get remainingBudget {
@@ -85,6 +87,11 @@ class PipelineContext {
 
   @internal
   Timer? deadlineTimer;
+
+  /// Points the context at [options], the copy of [request] an interceptor
+  /// ahead of the pipeline handed a replay on as.
+  @internal
+  void rebind(RequestOptions options) => _request = options;
 
   /// Stops the deadline timer. Called once the request has finished.
   @internal

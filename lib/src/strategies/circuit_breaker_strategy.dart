@@ -10,6 +10,10 @@ import '../strategy.dart';
 // Circuit state machine
 // ---------------------------------------------------------------------------
 
+/// Context key holding the circuit whose half-open probe slot a request
+/// took, until the probe has a result.
+const String _kProbeKey = '_circuit_key';
+
 /// The current state of a single circuit keyed by host (or custom key).
 enum CircuitPhase { closed, open, halfOpen }
 
@@ -183,7 +187,7 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
           state.probesDispatched++;
           // Store the key on the context so onResponse/onError can look it up
           // without re-computing.
-          ctx.meta['_circuit_key'] = key;
+          ctx.meta[_kProbeKey] = key;
           return;
         }
         // Still open — short-circuit.
@@ -196,10 +200,10 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
       case CircuitPhase.halfOpen:
         // A replay of a probe (a retry, a refreshed token, a solved
         // challenge) is still that probe, not a new one.
-        if (ctx.meta['_circuit_key'] == key) return;
+        if (ctx.meta[_kProbeKey] == key) return;
         if (state.probesDispatched < halfOpenProbes) {
           state.probesDispatched++;
-          ctx.meta['_circuit_key'] = key;
+          ctx.meta[_kProbeKey] = key;
           return;
         }
         // Probe budget exhausted — reject until we close or re-open.
@@ -222,6 +226,8 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
 
     final key = _keyFor(ctx.request);
     final state = _stateFor(key);
+    // This request's probe (if it was one) has its result.
+    ctx.meta.remove(_kProbeKey);
 
     switch (state.phase) {
       case CircuitPhase.halfOpen:
@@ -250,14 +256,16 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
 
     // A cancelled request says nothing about the backend, and neither do
     // the pipeline's own decisions (circuit open, rate limit, exhausted
-    // retries, deadline): the attempts behind them were counted as they
-    // failed, or never reached the backend. A half-open probe that ends
-    // this way gives its slot back, or the circuit would wait forever for
-    // its result.
-    if (error.type == DioExceptionType.cancel ||
-        error is DioResilienceException ||
-        error.error is DioResilienceException) {
-      _releaseProbe(ctx);
+    // retries): the attempts behind them were counted as they failed, or
+    // never reached the backend. An attempt the deadline cut short did
+    // reach it, and it didn't answer in time: that one counts. A half-open
+    // probe that ends without a result gives its slot back in [onEnd].
+    final cutByDeadline =
+        error is PipelineTimeoutException && error.cutAttempt;
+    if (!cutByDeadline &&
+        (error.type == DioExceptionType.cancel ||
+            error is DioResilienceException ||
+            error.error is DioResilienceException)) {
       return null;
     }
 
@@ -269,6 +277,8 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
     final key = _keyFor(ctx.request);
     final state = _stateFor(key);
     final timestamp = now();
+    // This request's probe (if it was one) has its result.
+    ctx.meta.remove(_kProbeKey);
 
     switch (state.phase) {
       case CircuitPhase.closed:
@@ -288,6 +298,12 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
 
     return null;
   }
+
+  /// A half-open probe that ended without a result (cancelled, a failed
+  /// challenge, a pipeline decision) gives its slot back, or the circuit
+  /// would wait for that result forever.
+  @override
+  void onEnd(PipelineContext ctx) => _releaseProbe(ctx);
 
   // ----- Internal helpers --------------------------------------------------
 
@@ -311,7 +327,7 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
 
   /// Gives back the half-open probe slot [ctx] took, if it took one.
   void _releaseProbe(PipelineContext ctx) {
-    final key = ctx.meta.remove('_circuit_key');
+    final key = ctx.meta.remove(_kProbeKey);
     if (key is! String) return;
     final state = _states[key];
     if (state != null &&
