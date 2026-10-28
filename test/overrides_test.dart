@@ -183,12 +183,11 @@ void main() {
 
     group('resilience() overwrites previous overrides', () {
       test('passing full ResilienceOverrides replaces merged state', () {
-        final opts = Options()
-            .noRetry()
-            .noAuth()
-            .resilience(const ResilienceOverrides(
-              retry: RetryOverride.attempts(7),
-            ),);
+        final opts = Options().noRetry().noAuth().resilience(
+              const ResilienceOverrides(
+                retry: RetryOverride.attempts(7),
+              ),
+            );
         final overrides = overridesFor(opts);
         // resilience() replaces the entire bag
         expect(_retryKind(overrides!.retry), equals('attempts'));

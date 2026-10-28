@@ -126,6 +126,10 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
   /// simulate time without sleeping.
   final DateTime Function() now;
 
+  /// Called when a circuit changes phase.
+  final void Function(String key, CircuitPhase from, CircuitPhase to)?
+      onStateChange;
+
   /// In-memory per-key circuit state.
   final Map<String, _CircuitState> _states = {};
 
@@ -144,12 +148,14 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
   ///   non-standard).
   /// - [now]: injectable clock used for all time checks. Pass a custom
   ///   function in tests to control time without sleeping.
+  /// - [onStateChange]: called on every phase change.
   CircuitBreakerStrategy({
     this.failureThreshold = 5,
     this.windowDuration = const Duration(seconds: 60),
     this.cooldown = const Duration(seconds: 30),
     this.halfOpenProbes = 1,
     this.keyExtractor,
+    this.onStateChange,
     DateTime Function()? now,
   }) : now = now ?? DateTime.now;
 
@@ -173,7 +179,7 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
         final elapsed = timestamp.difference(state.openedAt!);
         if (elapsed >= cooldown) {
           // Cooldown has passed: allow one probe batch by entering half-open.
-          state.enterHalfOpen();
+          _move(key, state, state.enterHalfOpen);
           state.probesDispatched++;
           // Store the key on the context so onResponse/onError can look it up
           // without re-computing.
@@ -216,7 +222,7 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
       case CircuitPhase.halfOpen:
         state.halfOpenSuccesses++;
         if (state.halfOpenSuccesses >= halfOpenProbes) {
-          state.close();
+          _move(key, state, state.close);
         }
       case CircuitPhase.closed:
         // Reset the rolling window on success so transient spikes don't
@@ -237,14 +243,23 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
     // replay logic. Return null so the pipeline continues to the next strategy.
     if (_isDisabledFor(ctx.request)) return null;
 
-    // Do not count circuit-open exceptions as failures (they were already
-    // rejected before the request was ever sent).
-    if (error.error is CircuitOpenException) return null;
+    // A cancelled request says nothing about the backend, and neither do
+    // the pipeline's own decisions (circuit open, rate limit, exhausted
+    // retries, deadline): the attempts behind them were counted as they
+    // failed, or never reached the backend. A half-open probe that ends
+    // this way gives its slot back, or the circuit would wait forever for
+    // its result.
+    if (error.type == DioExceptionType.cancel ||
+        error is DioResilienceException ||
+        error.error is DioResilienceException) {
+      _releaseProbe(ctx);
+      return null;
+    }
 
     // Do not count challenge-shaped responses as failures. The server is
     // instructing the client to solve a proof (CAPTCHA / MFA / attestation)
     // and replay; this is not backend unavailability.
-    if (ctx.meta['_in_challenge'] == true) return null;
+    if (ctx.isChallengeError) return null;
 
     final key = _keyFor(ctx.request);
     final state = _stateFor(key);
@@ -255,11 +270,11 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
         state.recordFailure(timestamp);
         final count = state.failureCount(windowDuration, timestamp);
         if (count >= failureThreshold) {
-          state.trip(timestamp);
+          _move(key, state, () => state.trip(timestamp));
         }
       case CircuitPhase.halfOpen:
         // Any failure in half-open → reopen.
-        state.trip(timestamp);
+        _move(key, state, () => state.trip(timestamp));
       case CircuitPhase.open:
         // Should not normally reach here (request rejected in onRequest),
         // but record anyway.
@@ -275,13 +290,32 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
   _CircuitState _stateFor(String key) =>
       _states.putIfAbsent(key, _CircuitState.new);
 
-  /// Compute the circuit key for a request.
-  String _keyFor(RequestOptions request) {
-    if (keyExtractor != null) return keyExtractor!(request);
+  /// Gives back the half-open probe slot [ctx] took, if it took one.
+  void _releaseProbe(PipelineContext ctx) {
+    final key = ctx.meta.remove('_circuit_key');
+    if (key is! String) return;
+    final state = _states[key];
+    if (state != null &&
+        state.phase == CircuitPhase.halfOpen &&
+        state.probesDispatched > 0) {
+      state.probesDispatched--;
+    }
+  }
 
-    // Check per-request circuitKey override stashed in extra.
+  /// Runs [transition] on [state] and reports the phase change, if any.
+  void _move(String key, _CircuitState state, void Function() transition) {
+    final from = state.phase;
+    transition();
+    if (state.phase != from) onStateChange?.call(key, from, state.phase);
+  }
+
+  /// Compute the circuit key for a request: the per-request `circuitKey`,
+  /// then [keyExtractor], then host[:port].
+  String _keyFor(RequestOptions request) {
     final perRequest = request.extra[kCircuitKeyOverride];
-    if (perRequest is String) return perRequest;
+    if (perRequest is String && perRequest.isNotEmpty) return perRequest;
+
+    if (keyExtractor != null) return keyExtractor!(request);
 
     // Default: host[:port] — keeps circuits isolated per back-end service.
     final uri = Uri.tryParse(request.uri.toString());

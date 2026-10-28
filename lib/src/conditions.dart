@@ -1,5 +1,7 @@
 import 'package:dio/dio.dart';
 
+import 'transport/transport_cause.dart';
+
 /// Snapshot of a failed attempt, passed to [RetryCondition.matches].
 class RetryEvaluation {
   final DioException error;
@@ -16,9 +18,11 @@ class RetryEvaluation {
   String? get dioMessage => error.message;
   Object? get responseBody => error.response?.data;
 
+  /// The connection failed or dropped before a response arrived. Not a
+  /// response that failed to decode, which would fail again.
   bool get isNetworkError =>
       error.type == DioExceptionType.connectionError ||
-      error.type == DioExceptionType.unknown && error.error != null;
+      error.type == DioExceptionType.unknown && isTransportCause(error.error);
 
   bool get isTimeout =>
       error.type == DioExceptionType.connectionTimeout ||

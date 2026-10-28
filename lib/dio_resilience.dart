@@ -8,7 +8,9 @@ library;
 
 export 'src/backoff.dart';
 export 'src/conditions.dart';
+export 'src/events.dart';
 export 'src/exceptions.dart';
+export 'src/http_date.dart' show parseHttpDate;
 export 'src/options_extension.dart';
 export 'src/overrides.dart';
 export 'src/pipeline.dart';

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:dio_resilience/src/conditions.dart';
 import 'package:test/test.dart';
@@ -84,19 +86,49 @@ void main() {
         expect(condition.matches(eval), isFalse);
       });
 
-      test('matches DioExceptionType.unknown with error set', () {
+      test('matches DioExceptionType.unknown caused by a dropped connection',
+          () {
         const condition = RetryCondition.networkError();
-        final exception = DioException(
-          requestOptions: _mkRequestOptions(),
-          type: DioExceptionType.unknown,
-          error: Exception('Network issue'),
-        );
-        final eval = RetryEvaluation(
-          error: exception,
-          attemptNumber: 1,
-          elapsed: Duration.zero,
-        );
-        expect(condition.matches(eval), isTrue);
+        for (final cause in <Object>[
+          const SocketException('Connection reset by peer'),
+          const HttpException(
+              'Connection closed before full header was received'),
+          const HandshakeException('Connection terminated during handshake'),
+        ]) {
+          final exception = DioException(
+            requestOptions: _mkRequestOptions(),
+            type: DioExceptionType.unknown,
+            error: cause,
+          );
+          final eval = RetryEvaluation(
+            error: exception,
+            attemptNumber: 1,
+            elapsed: Duration.zero,
+          );
+          expect(condition.matches(eval), isTrue, reason: '$cause');
+        }
+      });
+
+      test('does not match an unknown error that would fail again', () {
+        const condition = RetryCondition.networkError();
+        for (final cause in <Object>[
+          const FormatException('Unexpected character'),
+          Exception('Network issue'),
+          const HttpException('Redirect loop detected'),
+          const HandshakeException('CERTIFICATE_VERIFY_FAILED'),
+        ]) {
+          final exception = DioException(
+            requestOptions: _mkRequestOptions(),
+            type: DioExceptionType.unknown,
+            error: cause,
+          );
+          final eval = RetryEvaluation(
+            error: exception,
+            attemptNumber: 1,
+            elapsed: Duration.zero,
+          );
+          expect(condition.matches(eval), isFalse, reason: '$cause');
+        }
       });
 
       test('does not match DioExceptionType.unknown without error', () {
@@ -166,7 +198,9 @@ void main() {
 
     group('dioMessageContains', () {
       test('matches substring in message case-insensitive by default', () {
-        const condition = RetryCondition.dioMessageContains('insufficient_funds', caseSensitive: false);
+        const condition = RetryCondition.dioMessageContains(
+            'insufficient_funds',
+            caseSensitive: false);
         final exception = DioException(
           requestOptions: _mkRequestOptions(),
           message: 'Error: INSUFFICIENT_FUNDS encountered',
@@ -180,7 +214,9 @@ void main() {
       });
 
       test('respects case-sensitive matching', () {
-        const condition = RetryCondition.dioMessageContains('insufficient_funds', caseSensitive: true);
+        const condition = RetryCondition.dioMessageContains(
+            'insufficient_funds',
+            caseSensitive: true);
         final exception = DioException(
           requestOptions: _mkRequestOptions(),
           message: 'Error: INSUFFICIENT_FUNDS encountered',
@@ -194,7 +230,9 @@ void main() {
       });
 
       test('matches case-sensitive when cases match', () {
-        const condition = RetryCondition.dioMessageContains('insufficient_funds', caseSensitive: true);
+        const condition = RetryCondition.dioMessageContains(
+            'insufficient_funds',
+            caseSensitive: true);
         final exception = DioException(
           requestOptions: _mkRequestOptions(),
           message: 'Error: insufficient_funds encountered',
@@ -249,52 +287,68 @@ void main() {
 
     group('responseField', () {
       test('matches nested path with correct value', () {
-        const condition = RetryCondition.responseField('error.code', equals: 'DUPE');
-        final eval = _mkEval(responseBody: {
-          'error': {'code': 'DUPE'},
-        },);
+        const condition =
+            RetryCondition.responseField('error.code', equals: 'DUPE');
+        final eval = _mkEval(
+          responseBody: {
+            'error': {'code': 'DUPE'},
+          },
+        );
         expect(condition.matches(eval), isTrue);
       });
 
       test('returns false when path does not resolve', () {
-        const condition = RetryCondition.responseField('error.code', equals: 'DUPE');
-        final eval = _mkEval(responseBody: {
-          'other': {'code': 'DUPE'},
-        },);
+        const condition =
+            RetryCondition.responseField('error.code', equals: 'DUPE');
+        final eval = _mkEval(
+          responseBody: {
+            'other': {'code': 'DUPE'},
+          },
+        );
         expect(condition.matches(eval), isFalse);
       });
 
       test('returns false when nested key missing', () {
-        const condition = RetryCondition.responseField('error.code', equals: 'DUPE');
-        final eval = _mkEval(responseBody: {
-          'error': {'message': 'DUPE'},
-        },);
+        const condition =
+            RetryCondition.responseField('error.code', equals: 'DUPE');
+        final eval = _mkEval(
+          responseBody: {
+            'error': {'message': 'DUPE'},
+          },
+        );
         expect(condition.matches(eval), isFalse);
       });
 
       test('returns false when value differs', () {
-        const condition = RetryCondition.responseField('error.code', equals: 'DUPE');
-        final eval = _mkEval(responseBody: {
-          'error': {'code': 'OTHER'},
-        },);
+        const condition =
+            RetryCondition.responseField('error.code', equals: 'DUPE');
+        final eval = _mkEval(
+          responseBody: {
+            'error': {'code': 'OTHER'},
+          },
+        );
         expect(condition.matches(eval), isFalse);
       });
 
       test('returns false when response body is not a map', () {
-        const condition = RetryCondition.responseField('error.code', equals: 'DUPE');
+        const condition =
+            RetryCondition.responseField('error.code', equals: 'DUPE');
         final eval = _mkEval(responseBody: 'not a map');
         expect(condition.matches(eval), isFalse);
       });
 
       test('matches deep nested paths', () {
-        const condition = RetryCondition.responseField('a.b.c.d', equals: 'deep');
-        final eval = _mkEval(responseBody: {
-          'a': {
-            'b': {
-              'c': {'d': 'deep'},
+        const condition =
+            RetryCondition.responseField('a.b.c.d', equals: 'deep');
+        final eval = _mkEval(
+          responseBody: {
+            'a': {
+              'b': {
+                'c': {'d': 'deep'},
+              },
             },
           },
-        },);
+        );
         expect(condition.matches(eval), isTrue);
       });
     });
@@ -310,20 +364,24 @@ void main() {
         final condition = RetryCondition.predicate(
           (e) => e.statusCode == 503 && e.attemptNumber <= 3,
         );
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)), isTrue);
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)), isFalse);
+        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
+            isTrue);
+        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)),
+            isFalse);
       });
     });
 
     group('or combinator', () {
       test('returns true when either condition matches', () {
-        final condition = const RetryCondition.status(503).or(const RetryCondition.status(502));
+        final condition = const RetryCondition.status(503)
+            .or(const RetryCondition.status(502));
         expect(condition.matches(_mkEval(statusCode: 503)), isTrue);
         expect(condition.matches(_mkEval(statusCode: 502)), isTrue);
       });
 
       test('returns false when neither matches', () {
-        final condition = const RetryCondition.status(503).or(const RetryCondition.status(502));
+        final condition = const RetryCondition.status(503)
+            .or(const RetryCondition.status(502));
         expect(condition.matches(_mkEval(statusCode: 500)), isFalse);
       });
     });
@@ -333,14 +391,16 @@ void main() {
         final condition = const RetryCondition.statusBetween(500, 599).and(
           RetryCondition.predicate((e) => e.attemptNumber < 3),
         );
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)), isTrue);
+        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
+            isTrue);
       });
 
       test('returns false when one condition fails', () {
         final condition = const RetryCondition.statusBetween(500, 599).and(
           RetryCondition.predicate((e) => e.attemptNumber < 3),
         );
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)), isFalse);
+        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 4)),
+            isFalse);
       });
     });
 
@@ -376,8 +436,10 @@ void main() {
           const RetryCondition.statusBetween(500, 599),
           RetryCondition.predicate((e) => e.attemptNumber <= 2),
         ]);
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)), isTrue);
-        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 3)), isFalse);
+        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 2)),
+            isTrue);
+        expect(condition.matches(_mkEval(statusCode: 503, attemptNumber: 3)),
+            isFalse);
       });
 
       test('empty list always matches', () {

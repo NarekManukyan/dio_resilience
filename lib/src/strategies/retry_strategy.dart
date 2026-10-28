@@ -7,12 +7,27 @@ import '../options_extension.dart';
 import '../overrides.dart';
 import '../pipeline_context.dart';
 import '../strategy.dart';
+import '../http_date.dart';
+
+/// The HTTP methods RFC 9110 defines as idempotent: sending one twice has
+/// the same effect as sending it once. The retry strategy's default.
+const Set<String> kIdempotentMethods = {
+  'GET',
+  'HEAD',
+  'OPTIONS',
+  'TRACE',
+  'PUT',
+  'DELETE',
+};
+
+/// Longest `Retry-After` the retry strategy waits by default.
+const Duration kDefaultMaxRetryAfter = Duration(seconds: 30);
 
 /// Retry strategy implementing configurable retry logic with backoff and Retry-After support.
 ///
-/// The strategy manages retry budgets per request, respects per-request overrides,
-/// and coordinates with the auth strategy to avoid counting auth-induced replays
-/// against the retry budget.
+/// The strategy manages retry budgets per request and respects per-request
+/// overrides. Replays other strategies ask for (an auth refresh, a solved
+/// challenge) don't count against its budget.
 final class RetryStrategy extends ResilienceStrategy {
   @override
   String get name => 'retry';
@@ -29,13 +44,25 @@ final class RetryStrategy extends ResilienceStrategy {
   /// Conditions to skip retry on by default (if no override is set).
   final List<RetryCondition> defaultDoNotRetryOn;
 
+  /// HTTP methods that may be retried, upper case. Null retries any method.
+  final Set<String>? methods;
+
+  /// Longest `Retry-After` to wait. A longer one ends the request with the
+  /// server's answer. Null waits any.
+  final Duration? maxRetryAfter;
+
+  /// Clock for HTTP-date `Retry-After` values. Defaults to [DateTime.now].
+  final DateTime Function() now;
+
   /// Creates a [RetryStrategy].
   ///
   /// - [maxAttempts]: Initial retry budget (default 3, including the original request).
   /// - [backoff]: Delay policy between retries (default: exponential jitter).
   /// - [defaultRetryOn]: Conditions to trigger retry (default: 5xx, 408, 429, network errors, timeouts).
   /// - [defaultDoNotRetryOn]: Additional conditions to block retry (default: empty).
-  const RetryStrategy({
+  /// - [methods]: Retryable HTTP methods (default: [kIdempotentMethods]).
+  /// - [maxRetryAfter]: Longest `Retry-After` to wait (default: [kDefaultMaxRetryAfter]).
+  RetryStrategy({
     this.maxAttempts = 3,
     this.backoff = const Backoff.exponentialJitter(
       initial: Duration(milliseconds: 200),
@@ -44,6 +71,9 @@ final class RetryStrategy extends ResilienceStrategy {
     ),
     List<RetryCondition>? defaultRetryOn,
     List<RetryCondition>? defaultDoNotRetryOn,
+    this.methods = kIdempotentMethods,
+    this.maxRetryAfter = kDefaultMaxRetryAfter,
+    DateTime Function()? now,
   })  : defaultRetryOn = defaultRetryOn ??
             const [
               RetryCondition.statusBetween(500, 599),
@@ -52,7 +82,8 @@ final class RetryStrategy extends ResilienceStrategy {
               RetryCondition.networkError(),
               RetryCondition.timeout(),
             ],
-        defaultDoNotRetryOn = defaultDoNotRetryOn ?? const [];
+        defaultDoNotRetryOn = defaultDoNotRetryOn ?? const [],
+        now = now ?? DateTime.now;
 
   @override
   Future<StrategyDecision?> onError(
@@ -68,16 +99,8 @@ final class RetryStrategy extends ResilienceStrategy {
     // refresh failed, pipeline timeout). These are terminal decisions made by
     // sibling strategies — replaying them would either short-circuit again or
     // defeat the strategy's intent.
-    if (error is DioResilienceException || error.error is DioResilienceException) {
-      return null;
-    }
-
-    // If this is a replay after auth refresh, don't count it against retry budget.
-    if (ctx.wasReplayedAfterRefresh) {
-      ctx.wasReplayedAfterRefresh = false;
-      (ctx.meta['authReplays'] as int?) != null
-          ? ctx.meta['authReplays'] = (ctx.meta['authReplays'] as int) + 1
-          : ctx.meta['authReplays'] = 1;
+    if (error is DioResilienceException ||
+        error.error is DioResilienceException) {
       return null;
     }
 
@@ -89,12 +112,13 @@ final class RetryStrategy extends ResilienceStrategy {
       return null;
     }
 
-    // Determine effective maxAttempts and conditions based on override type.
+    if (!_methodAllowed(ctx.request.method, override)) {
+      return null;
+    }
+
     final effectiveMaxAttempts =
         _getEffectiveMaxAttempts(override, maxAttempts);
-    final (shouldRetry, evaluation) = _evaluateRetry(ctx, error, override);
-
-    if (!shouldRetry) {
+    if (!_shouldRetry(ctx, error, override)) {
       return null;
     }
 
@@ -104,60 +128,63 @@ final class RetryStrategy extends ResilienceStrategy {
         AllAttemptsExhaustedException(
           requestOptions: ctx.request,
           attempts: effectiveMaxAttempts,
-          response: error.response,
-          error: error.error,
+          lastError: error,
           stackTrace: error.stackTrace,
         ),
       );
     }
 
-    // Compute backoff delay.
-    final effectiveBackoff = _getEffectiveBackoff(override);
-    var delay = effectiveBackoff.delayFor(ctx.attemptNumber);
+    var delay = _getEffectiveBackoff(override).delayFor(ctx.attemptNumber);
 
-    // Check for Retry-After header and use it if it's greater.
-    final retryAfterDelay = _parseRetryAfter(error);
-    if (retryAfterDelay != null && retryAfterDelay > delay) {
-      delay = retryAfterDelay;
+    // Honour Retry-After when it asks for longer than the backoff, unless
+    // it asks for longer than we're willing to wait.
+    final retryAfter = _parseRetryAfter(error);
+    if (retryAfter != null) {
+      final cap = maxRetryAfter;
+      if (cap != null && retryAfter > cap) {
+        return null;
+      }
+      if (retryAfter > delay) {
+        delay = retryAfter;
+      }
     }
 
     return StrategyDecision.replay(delay: delay);
   }
 
+  bool _methodAllowed(String method, RetryOverride? override) {
+    final allowed = switch (override) {
+      RetryPolicy(methods: final m?) => m,
+      _ => methods,
+    };
+    if (allowed == null) return true;
+    final upper = method.toUpperCase();
+    return allowed.any((m) => m.toUpperCase() == upper);
+  }
+
   /// Determines the effective max attempts based on the override.
   int _getEffectiveMaxAttempts(RetryOverride? override, int defaultMax) {
-    if (override == null) {
-      return defaultMax;
-    }
-
     return switch (override) {
-      RetryDisabled() => defaultMax, // Should not reach here.
+      null ||
+      RetryDisabled() ||
+      RetryExceptWhen() ||
+      RetryOnlyWhen() =>
+        defaultMax,
       RetryAttempts(attempts: final n) => n,
-      RetryExceptWhen() => defaultMax,
-      RetryOnlyWhen() => defaultMax,
       RetryPolicy(maxAttempts: final n) => n ?? defaultMax,
     };
   }
 
   /// Determines the effective backoff based on the override.
   Backoff _getEffectiveBackoff(RetryOverride? override) {
-    if (override == null) {
-      return backoff;
-    }
-
     return switch (override) {
-      RetryDisabled() => backoff,
-      RetryAttempts() => backoff,
-      RetryExceptWhen() => backoff,
-      RetryOnlyWhen() => backoff,
-      RetryPolicy(backoff: final b) => b ?? backoff,
+      RetryPolicy(backoff: final b?) => b,
+      _ => backoff,
     };
   }
 
-  /// Evaluates whether the error should trigger a retry based on conditions.
-  ///
-  /// Returns (shouldRetry, evaluation).
-  (bool, RetryEvaluation) _evaluateRetry(
+  /// Whether [error] matches the effective retry conditions.
+  bool _shouldRetry(
     PipelineContext ctx,
     DioException error,
     RetryOverride? override,
@@ -168,25 +195,16 @@ final class RetryStrategy extends ResilienceStrategy {
       elapsed: ctx.elapsed.elapsed,
     );
 
-    // Determine effective conditions based on override.
     final (retryOn, doNotRetryOn) =
         _getEffectiveConditions(override, defaultRetryOn, defaultDoNotRetryOn);
 
-    // Check if any "do not retry" condition matches.
     for (final cond in doNotRetryOn) {
-      if (cond.matches(evaluation)) {
-        return (false, evaluation);
-      }
+      if (cond.matches(evaluation)) return false;
     }
-
-    // Check if any "retry on" condition matches.
     for (final cond in retryOn) {
-      if (cond.matches(evaluation)) {
-        return (true, evaluation);
-      }
+      if (cond.matches(evaluation)) return true;
     }
-
-    return (false, evaluation);
+    return false;
   }
 
   /// Determines effective retry and "do not retry" conditions based on the override.
@@ -195,13 +213,11 @@ final class RetryStrategy extends ResilienceStrategy {
     List<RetryCondition> defaultRetryOn,
     List<RetryCondition> defaultDoNotRetryOn,
   ) {
-    if (override == null) {
-      return (defaultRetryOn, defaultDoNotRetryOn);
-    }
-
     return switch (override) {
-      RetryDisabled() => (defaultRetryOn, defaultDoNotRetryOn),
-      RetryAttempts() => (defaultRetryOn, defaultDoNotRetryOn),
+      null || RetryDisabled() || RetryAttempts() => (
+          defaultRetryOn,
+          defaultDoNotRetryOn,
+        ),
       RetryExceptWhen(conditions: final conds) => (
           defaultRetryOn,
           [...defaultDoNotRetryOn, ...conds],
@@ -218,28 +234,20 @@ final class RetryStrategy extends ResilienceStrategy {
     };
   }
 
-  /// Parses the Retry-After header and returns the delay, or null if absent/invalid.
-  ///
-  /// Handles both numeric (seconds) and HTTP-date formats.
+  /// Parses the Retry-After header: delay-seconds or an HTTP-date. Null when
+  /// absent or unreadable. A date in the past reads as zero.
   Duration? _parseRetryAfter(DioException error) {
-    final response = error.response;
-    if (response == null) return null;
+    final value = error.response?.headers['retry-after']?.firstOrNull?.trim();
+    if (value == null || value.isEmpty) return null;
 
-    final retryAfter = response.headers['retry-after'];
-    if (retryAfter == null || retryAfter.isEmpty) return null;
-
-    final value = retryAfter.first;
-
-    // Try parsing as seconds (numeric).
     final seconds = int.tryParse(value);
     if (seconds != null) {
-      return Duration(seconds: seconds);
+      return seconds < 0 ? null : Duration(seconds: seconds);
     }
 
-    // Try parsing as HTTP-date (simplified: just count as retry later).
-    // For now, skip HTTP-date parsing and return null.
-    // A full implementation would parse RFC 7231 date format.
-
-    return null;
+    final date = parseHttpDate(value);
+    if (date == null) return null;
+    final wait = date.difference(now().toUtc());
+    return wait.isNegative ? Duration.zero : wait;
   }
 }

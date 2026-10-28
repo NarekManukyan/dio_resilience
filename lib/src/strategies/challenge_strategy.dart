@@ -43,6 +43,9 @@ final class ChallengeOnError extends ChallengeSignal {
 
 /// Predicate determining whether a signal represents a server-issued
 /// challenge demanding a solved proof token.
+///
+/// Called once per response and once per error. Keep it a pure check; a
+/// matcher that throws counts as "not a challenge".
 typedef ChallengeMatcher = bool Function(ChallengeSignal signal);
 
 /// Solver that produces a challenge token from the request and (optionally)
@@ -123,12 +126,21 @@ const String _kChallengeAttemptsKey = '__dio_resilience_challenge_attempts__';
 ///   2. Applies the resulting token to the original [RequestOptions] via
 ///      [ChallengeConfig.applier].
 ///   3. Returns [StrategyDecision.replay] so the pipeline re-fires the
-///      request with the attached token.
+///      request with the attached token. That replay doesn't count against
+///      the retry budget.
+///
+/// A response the matcher accepts is a challenge even with a 2xx status: the
+/// strategy turns it into an error so the replay path above handles it.
 ///
 /// Pipeline placement: between **hedging** and **retry**, so a challenge-shaped
 /// response is intercepted *before* the retry strategy burns its budget on
 /// blind replays of a request the server has explicitly told us cannot
-/// succeed without a fresh token.
+/// succeed without a fresh token. The circuit breaker doesn't count
+/// challenges as failures.
+///
+/// When solving fails (the solver throws or times out, or [maxAttempts]
+/// solves were already spent) the request fails with a
+/// [ChallengeFailedException]; a fallback still gets to handle it.
 final class ChallengeStrategy<T> extends ResilienceStrategy {
   final ChallengeConfig<T> config;
 
@@ -140,13 +152,23 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
   @override
   String get name => 'challenge';
 
-  /// Pipeline-internal probe: would [signal] trigger this strategy?
+  /// Whether this strategy will answer [error] on [request]: it is enabled
+  /// for the request and the matcher accepts the error.
   ///
-  /// Used by the pipeline to stamp a challenge-in-progress flag on the
-  /// context BEFORE sibling strategies (notably circuit breaker) run their
-  /// `onError` hooks, so that challenge-shaped responses don't count
-  /// against unrelated failure budgets.
-  bool wouldMatch(ChallengeSignal signal) => config.matcher(signal);
+  /// The pipeline asks once per error, before any strategy's `onError`, and
+  /// stores the answer in [PipelineContext.isChallengeError], so siblings
+  /// (the circuit breaker) can skip challenges in their accounting.
+  bool handles(RequestOptions request, DioException error) {
+    if (_isDisabledFor(request)) return false;
+    if (error.type == DioExceptionType.cancel) return false;
+    if (error is DioResilienceException) return false;
+    final response = error.response;
+    return _matches(
+      response != null
+          ? ChallengeOnResponse(response)
+          : ChallengeOnError(error),
+    );
+  }
 
   @override
   Future<void> onResponse(
@@ -155,7 +177,7 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
   ) async {
     if (_isDisabledFor(ctx.request)) return;
 
-    if (!config.matcher(ChallengeOnResponse(response))) return;
+    if (!_matches(ChallengeOnResponse(response))) return;
 
     // Server returned a successful HTTP response that the matcher classifies
     // as a challenge (e.g. 200 with a challenge body). Convert it into a
@@ -173,15 +195,8 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
     PipelineContext ctx,
     DioException error,
   ) async {
-    if (_isDisabledFor(ctx.request)) return null;
-
-    // Build the signal: prefer response-shaped if a response is present
-    // (covers both badResponse errors and our self-thrown marker above).
-    final signal = error.response != null
-        ? ChallengeOnResponse(error.response!)
-        : ChallengeOnError(error);
-
-    if (!config.matcher(signal)) return null;
+    // The pipeline already asked [handles] for this error.
+    if (!ctx.isChallengeError) return null;
 
     // Recursion guard: cap solve+replay cycles per request.
     final attempts = (ctx.meta[_kChallengeAttemptsKey] as int?) ?? 0;
@@ -190,6 +205,7 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
         ChallengeFailedException(
           requestOptions: ctx.request,
           reason: ChallengeFailureReason.maxAttemptsExceeded,
+          response: error.response,
           stackTrace: StackTrace.current,
         ),
       );
@@ -204,6 +220,7 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
         ChallengeFailedException(
           requestOptions: ctx.request,
           reason: ChallengeFailureReason.solverTimeout,
+          response: error.response,
           error: e,
           stackTrace: st,
         ),
@@ -213,14 +230,35 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
         ChallengeFailedException(
           requestOptions: ctx.request,
           reason: ChallengeFailureReason.solverError,
+          response: error.response,
           error: e,
           stackTrace: st,
         ),
       );
     }
 
-    config.applier(ctx.request, token);
-    return const StrategyDecision.replay();
+    try {
+      config.applier(ctx.request, token);
+    } catch (e, st) {
+      return StrategyDecision.fail(
+        ChallengeFailedException(
+          requestOptions: ctx.request,
+          reason: ChallengeFailureReason.solverError,
+          response: error.response,
+          error: e,
+          stackTrace: st,
+        ),
+      );
+    }
+    return const StrategyDecision.replay(countsAsAttempt: false);
+  }
+
+  bool _matches(ChallengeSignal signal) {
+    try {
+      return config.matcher(signal);
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Run the solver under timeout + optional single-flight semantics.
@@ -262,10 +300,8 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
     return config.solver(request, response).timeout(config.solverTimeout);
   }
 
-  bool _isDisabledFor(RequestOptions request) {
-    final override = overridesFor(request)?.challenge;
-    return override is ChallengeDisabled;
-  }
+  bool _isDisabledFor(RequestOptions request) =>
+      overridesFor(request)?.challenge is ChallengeDisabled;
 
   /// Test/diagnostic hook: number of in-flight single-flight solves.
   int get inFlightCount => _inFlight.length;

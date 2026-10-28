@@ -100,9 +100,8 @@ final class _JitterBackoff extends Backoff {
   Duration delayFor(int attempt) {
     final factor = pow(multiplier, attempt - 1).toDouble();
     final ceilingMs = (initial.inMilliseconds * factor).round();
-    final clampedMs = maxDelay != null
-        ? min(ceilingMs, maxDelay!.inMilliseconds)
-        : ceilingMs;
+    final clampedMs =
+        maxDelay != null ? min(ceilingMs, maxDelay!.inMilliseconds) : ceilingMs;
     if (clampedMs <= 0) return Duration.zero;
     final jitteredMs = Random().nextInt(clampedMs + 1);
     return Duration(milliseconds: jitteredMs);

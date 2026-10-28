@@ -72,21 +72,11 @@ final class HedgingStrategy extends ResilienceStrategy {
     return method == 'GET' || method == 'HEAD';
   }
 
-  /// Meta flag stamped on a request that is itself a hedge branch — prevents
-  /// re-entrant hedging when branches are dispatched through `_dio.fetch`.
-  static const String _kHedgeBranchFlag = '__dio_resilience_hedge_branch__';
-
   @override
   Future<Response<dynamic>>? onDispatch(
     PipelineContext ctx,
     Future<Response<dynamic>> Function([RequestOptions? options]) doRequest,
   ) {
-    // Re-entrant guard: if this request is itself a hedge branch, do not
-    // hedge it again (would cause infinite recursion through `_dio.fetch`).
-    if (ctx.request.extra[_kHedgeBranchFlag] == true) {
-      return null;
-    }
-
     // Check per-request override first.
     final override = overridesFor(ctx.request)?.hedging;
     if (override is HedgingDisabled) {
@@ -124,6 +114,21 @@ final class HedgingStrategy extends ResilienceStrategy {
     // Track all in-flight cancel tokens so we can abort losers.
     final cancelTokens = <CancelToken>[];
 
+    // The caller's cancellation (or the pipeline's deadline) ends the whole
+    // round: cancel every branch and fail with that cancellation.
+    final parentToken = ctx.request.cancelToken;
+    if (parentToken != null) {
+      unawaited(
+        parentToken.whenCancel.then((cancel) {
+          if (winner.isCompleted) return;
+          winner.completeError(cancel.copyWith(requestOptions: ctx.request));
+          for (final token in cancelTokens) {
+            if (!token.isCancelled) token.cancel(cancel.error);
+          }
+        }),
+      );
+    }
+
     // Number of branches that have settled (either succeeded or errored).
     var settled = 0;
 
@@ -158,9 +163,7 @@ final class HedgingStrategy extends ResilienceStrategy {
         lastError = error;
       }
 
-      if (!winner.isCompleted &&
-          allBranchesScheduled &&
-          settled >= launched) {
+      if (!winner.isCompleted && allBranchesScheduled && settled >= launched) {
         // Every branch that will ever be launched has now settled and none
         // succeeded — propagate the last error.
         winner.completeError(lastError ?? error, st);
@@ -169,24 +172,17 @@ final class HedgingStrategy extends ResilienceStrategy {
 
     Future<void> launchBranch() async {
       if (winner.isCompleted) return;
+      if (parentToken != null && parentToken.isCancelled) return;
 
       launched++;
       final token = CancelToken();
       cancelTokens.add(token);
 
-      // Clone the shared RequestOptions for this branch so that:
-      //   1. Each branch carries its own CancelToken — losers can be cancelled
-      //      independently without touching the shared ctx.request.
-      //   2. The re-entrancy flag is isolated to the clone — it is never set on
-      //      ctx.request, so concurrent mutations from other branches or from
-      //      Dio's internal stream handler cannot cause null-dereference errors.
-      final branchOptions = ctx.request.copyWith(
-        cancelToken: token,
-        extra: {
-          ...ctx.request.extra,
-          _kHedgeBranchFlag: true,
-        },
-      );
+      // Clone the shared RequestOptions for this branch so each branch
+      // carries its own CancelToken: losers can be cancelled independently
+      // without touching the shared ctx.request. The pipeline sends the
+      // branch past its strategies, so it is never hedged or retried itself.
+      final branchOptions = ctx.request.copyWith(cancelToken: token);
 
       try {
         final response = await doRequest(branchOptions);
@@ -216,9 +212,7 @@ final class HedgingStrategy extends ResilienceStrategy {
           allBranchesScheduled = true;
           // Re-evaluate the all-failed condition in case the last branch
           // already errored before we flipped the flag.
-          if (!winner.isCompleted &&
-              settled >= launched &&
-              lastError != null) {
+          if (!winner.isCompleted && settled >= launched && lastError != null) {
             winner.completeError(lastError!);
           }
         }

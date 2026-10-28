@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:dio_resilience/src/exceptions.dart';
+import 'package:dio_resilience/src/options_extension.dart';
 import 'package:dio_resilience/src/overrides.dart';
 import 'package:dio_resilience/src/pipeline_context.dart';
 import 'package:dio_resilience/src/strategy.dart';
@@ -196,7 +197,8 @@ void main() {
         windowDuration: const Duration(seconds: 60),
         cooldown: const Duration(seconds: 30),
         halfOpenProbes: 1,
-        keyExtractor: (opts) => opts.path.contains('/payments') ? 'payments' : 'default',
+        keyExtractor: (opts) =>
+            opts.path.contains('/payments') ? 'payments' : 'default',
         now: () => now,
       );
 
@@ -216,10 +218,11 @@ void main() {
     // ------------------------------------------------------------------
     // 8. Options.circuitKey() per-request key override
     // ------------------------------------------------------------------
-    test('Options.circuitKey() overrides the per-request circuit key', () async {
+    test('Options.circuitKey() overrides the per-request circuit key',
+        () async {
       final overriddenReq = RequestOptions(
         path: 'https://api.example.com/data',
-        extra: {'_circuit_key_override': 'my-custom-key'},
+        extra: {kCircuitKeyOverride: 'my-custom-key'},
       );
 
       await _driveFailures(strategy, overriddenReq, 3);
@@ -250,7 +253,8 @@ void main() {
       await expectLater(strategy.onRequest(ctx), completes);
     });
 
-    test('CircuitOverride.disabled allows onError without recording failure', () async {
+    test('CircuitOverride.disabled allows onError without recording failure',
+        () async {
       final disabledReq = req.copyWith(
         extra: {
           '__dio_resilience_overrides__': const ResilienceOverrides(
@@ -281,7 +285,7 @@ void main() {
       // Now simulate the pipeline: onRequest throws CircuitOpenException,
       // which the pipeline converts into a DioException. RetryStrategy should
       // return null for it (it won't match any default retry condition).
-      const retryStrategy = RetryStrategy();
+      final retryStrategy = RetryStrategy();
       final ctx = PipelineContext(req);
 
       final circuitErr = CircuitOpenException(
@@ -304,7 +308,8 @@ void main() {
     // ------------------------------------------------------------------
     // 11. Probe budget exhausted in half-open while probesDispatched >= halfOpenProbes
     // ------------------------------------------------------------------
-    test('rejects extra requests in half-open when probe budget exhausted', () async {
+    test('rejects extra requests in half-open when probe budget exhausted',
+        () async {
       final multiProbeStrategy = CircuitBreakerStrategy(
         failureThreshold: 2,
         windowDuration: const Duration(seconds: 60),
@@ -319,7 +324,8 @@ void main() {
       // First probe — allowed, transitions to half-open.
       final probeCtx = PipelineContext(req);
       await multiProbeStrategy.onRequest(probeCtx);
-      expect(multiProbeStrategy.phaseFor('api.example.com'), CircuitPhase.halfOpen);
+      expect(multiProbeStrategy.phaseFor('api.example.com'),
+          CircuitPhase.halfOpen);
 
       // Second request before the probe resolves — should be rejected.
       final secondCtx = PipelineContext(req);
@@ -351,7 +357,8 @@ void main() {
     // ------------------------------------------------------------------
     // 13. Success in closed state resets the failure counter
     // ------------------------------------------------------------------
-    test('successful response in closed state clears the failure window', () async {
+    test('successful response in closed state clears the failure window',
+        () async {
       // 2 failures (threshold is 3).
       await _driveFailures(strategy, req, 2);
       expect(strategy.phaseFor('api.example.com'), CircuitPhase.closed);
@@ -372,13 +379,16 @@ void main() {
     // ------------------------------------------------------------------
     // 14. CircuitOverride.threshold / CircuitOverride.cooldown factories
     // ------------------------------------------------------------------
-    test('CircuitOverride.threshold and cooldown factories exist and hold values', () {
+    test(
+        'CircuitOverride.threshold and cooldown factories exist and hold values',
+        () {
       const t = CircuitOverride.threshold(10);
       const c = CircuitOverride.cooldown(Duration(seconds: 45));
       expect(t, isA<CircuitThreshold>());
       expect((t as CircuitThreshold).count, equals(10));
       expect(c, isA<CircuitCooldown>());
-      expect((c as CircuitCooldown).duration, equals(const Duration(seconds: 45)));
+      expect(
+          (c as CircuitCooldown).duration, equals(const Duration(seconds: 45)));
     });
 
     // ------------------------------------------------------------------

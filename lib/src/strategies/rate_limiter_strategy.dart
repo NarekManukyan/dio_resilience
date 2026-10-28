@@ -317,19 +317,20 @@ final class RateLimiterStrategy extends ResilienceStrategy {
 
     // mode == RateLimitMode.wait
     // Check total budget before sleeping.
-    final budget = _totalBudget(ctx);
-    if (budget != null) {
-      final remaining = budget - ctx.elapsed.elapsed;
-      if (remaining <= Duration.zero || wait > remaining) {
-        throw RateLimitExceededException(
-          requestOptions: ctx.request,
-          key: key,
-          stackTrace: StackTrace.current,
-        );
-      }
+    final remaining = ctx.remainingBudget;
+    if (remaining != null && (remaining <= Duration.zero || wait > remaining)) {
+      throw RateLimitExceededException(
+        requestOptions: ctx.request,
+        key: key,
+        stackTrace: StackTrace.current,
+      );
     }
 
     await Future<void>.delayed(wait);
+
+    // A request cancelled while it waited must not take a token.
+    final cancelled = ctx.request.cancelToken?.cancelError;
+    if (cancelled != null) throw cancelled;
   }
 
   // -------------------------------------------------------------------------
@@ -356,14 +357,6 @@ final class RateLimiterStrategy extends ResilienceStrategy {
     return '${uri.host}$port';
   }
 
-  RateLimitOverride? _rateLimitOverride(RequestOptions request) {
-    final overrides = request.extra['__dio_resilience_overrides__'];
-    if (overrides is ResilienceOverrides) return overrides.rateLimit;
-    return null;
-  }
-
-  Duration? _totalBudget(PipelineContext ctx) {
-    final v = ctx.meta['totalBudget'];
-    return v is Duration ? v : null;
-  }
+  RateLimitOverride? _rateLimitOverride(RequestOptions request) =>
+      overridesFor(request)?.rateLimit;
 }
