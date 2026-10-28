@@ -177,7 +177,7 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
   ) async {
     if (_isDisabledFor(ctx.request)) return;
 
-    return;
+    if (!_matches(ChallengeOnResponse(response))) return;
 
     // Server returned a successful HTTP response that the matcher classifies
     // as a challenge (e.g. 200 with a challenge body). Convert it into a
