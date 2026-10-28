@@ -2,7 +2,11 @@
 
 One Dio interceptor for token refresh, retry, timeouts, circuit breaking, rate limiting, hedging, challenges and fallback. The strategies share one context per request, so they work together instead of fighting each other.
 
-<!-- DEMO -->
+<p align="center">
+  <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/recordings/circuit_breaker.gif" width="240" alt="Circuit breaker opening, failing fast, probing and closing again in the example app">
+  <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/recordings/challenge.gif" width="240" alt="A CAPTCHA challenge solved and the request replayed in the example app">
+  <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/recordings/overview_intro.gif" width="240" alt="Running a retry scenario with its event log and statistics in the example app">
+</p>
 
 ## Why it exists
 
@@ -407,7 +411,19 @@ Extend `ResilienceStrategy` and override the hooks you need: `onStart` (once per
 
 ## Example app
 
-[`example/`](example) is a Flutter app with a screen for every strategy, a scriptable fake backend, a live event log and request statistics. Run it with `cd example && flutter run`.
+[`example/`](example) is a Flutter app with a screen for every strategy, a scriptable fake backend (no server needed), a live event log fed by `onEvent`, and request statistics: logical calls vs. requests on the wire, retries, refreshes, fallbacks, failures by type, p50/p95 latency.
+
+```sh
+cd example
+flutter run                                   # pick a scenario and press Run
+flutter run --dart-define=DEMO_AUTOPLAY=true  # walks through every screen on its own
+```
+
+| Retry | Auth | Timeout | Hedging |
+|:-:|:-:|:-:|:-:|
+| <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/02_retry_backoff.png" width="180" alt="Retry screen"> | <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/03_auth_refresh.png" width="180" alt="Auth screen"> | <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/04_timeout.png" width="180" alt="Timeout screen"> | <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/07_hedging.png" width="180" alt="Hedging screen"> |
+| **Fallback** | **Overrides** | **Cancellation** | **Rate limit** |
+| <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/09_fallback.png" width="180" alt="Fallback screen"> | <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/10_overrides.png" width="180" alt="Overrides screen"> | <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/11_cancellation.png" width="180" alt="Cancellation screen"> | <img src="https://raw.githubusercontent.com/NarekManukyan/dio_resilience/main/doc/screenshots/06_rate_limiter.png" width="180" alt="Rate limiter screen"> |
 
 ## Upgrading from 0.2
 

@@ -1,0 +1,23 @@
+.dart_tool/
+.packages
+build/
+pubspec.lock
+.pub/
+.flutter-plugins
+.flutter-plugins-dependencies
+coverage/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+firebase-debug.log
+
+# Media for the GitHub README; pub.dev only needs the pubspec screenshots.
+doc/recordings/
+doc/screenshots/02_*
+doc/screenshots/03_*
+doc/screenshots/04_*
+doc/screenshots/07_*
+doc/screenshots/09_*
+doc/screenshots/10_*
+doc/screenshots/11_*

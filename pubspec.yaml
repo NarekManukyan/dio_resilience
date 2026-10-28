@@ -5,6 +5,16 @@ homepage: https://github.com/NarekManukyan/dio_resilience
 repository: https://github.com/NarekManukyan/dio_resilience
 issue_tracker: https://github.com/NarekManukyan/dio_resilience/issues
 
+screenshots:
+  - description: The example app's scenario list, one screen per strategy.
+    path: doc/screenshots/01_overview.png
+  - description: A circuit breaker open and failing fast, with request statistics.
+    path: doc/screenshots/05_circuit_breaker_open.png
+  - description: A token-bucket rate limiter letting a burst through, then pacing the rest.
+    path: doc/screenshots/06_rate_limiter.png
+  - description: A challenge strategy showing a CAPTCHA before replaying the request.
+    path: doc/screenshots/08_challenge_captcha.png
+
 topics:
   - dio
   - http

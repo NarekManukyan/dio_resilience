@@ -20,8 +20,9 @@ sealed class ChallengeSignal {
   RequestOptions get request;
 }
 
-/// Signal for the response path — server returned a response that the matcher
-/// must classify as a challenge or non-challenge.
+/// Signal for any response the server sent: a success, or the response of
+/// an error status (a `428`, a `403` with a challenge body). The matcher
+/// classifies it as a challenge or not.
 final class ChallengeOnResponse extends ChallengeSignal {
   final Response<dynamic> response;
   const ChallengeOnResponse(this.response);
@@ -30,9 +31,9 @@ final class ChallengeOnResponse extends ChallengeSignal {
   RequestOptions get request => response.requestOptions;
 }
 
-/// Signal for the error path — Dio surfaced a [DioException]. The matcher may
-/// inspect [DioException.response] for a challenge-shaped failure (4xx body),
-/// or transport-level details when the response is null.
+/// Signal for an error that carries no response (a transport failure). An
+/// error with a response, such as a `428` or a `403` with a challenge body,
+/// reaches the matcher as [ChallengeOnResponse] instead.
 final class ChallengeOnError extends ChallengeSignal {
   final DioException error;
   const ChallengeOnError(this.error);
