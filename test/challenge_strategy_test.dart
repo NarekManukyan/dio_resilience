@@ -706,9 +706,6 @@ void main() {
           [CircuitPhase.open, CircuitPhase.halfOpen, CircuitPhase.closed],
         );
       },
-      skip: 'circuit_breaker_strategy.dart onRequest counts the replay of '
-          'a half-open probe as a new probe and rejects it with '
-          'CircuitOpenException (halfOpenProbes: 1).',
     );
   });
 
@@ -974,6 +971,8 @@ void main() {
         data: {'challenge': true},
       );
 
+      // As the pipeline does: ask once, then run onResponse.
+      ctx.isChallengeError = s.handlesResponse(ctx.request, response);
       await expectLater(
         s.onResponse(ctx, response),
         throwsA(
@@ -982,10 +981,11 @@ void main() {
               .having((e) => e.response, 'response', same(response)),
         ),
       );
-      await s.onResponse(
-        ctx,
-        Response<dynamic>(requestOptions: ctx.request, statusCode: 200),
-      );
+      final plain =
+          Response<dynamic>(requestOptions: ctx.request, statusCode: 200);
+      ctx.isChallengeError = s.handlesResponse(ctx.request, plain);
+      expect(ctx.isChallengeError, isFalse);
+      await s.onResponse(ctx, plain);
     });
 
     test('a solve returns a replay that does not count as an attempt',

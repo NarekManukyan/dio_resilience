@@ -1,5 +1,5 @@
 name: dio_resilience
-description: Coordinated Dio interceptor for retry, timeout, circuit breaker, rate limit, fallback, and OAuth token refresh. Strategies share state so they don't fight each other.
+description: Dio resilience pipeline with retry, timeouts, circuit breaker, rate limiting, hedging, fallback, challenges and token refresh, coordinated so they don't fight.
 version: 0.3.0
 homepage: https://github.com/NarekManukyan/dio_resilience
 repository: https://github.com/NarekManukyan/dio_resilience

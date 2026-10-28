@@ -170,14 +170,19 @@ final class ChallengeStrategy<T> extends ResilienceStrategy {
     );
   }
 
+  /// Whether this strategy will answer [response] on [request] as a
+  /// challenge. The pipeline asks once per response and stores the answer in
+  /// [PipelineContext.isChallengeError].
+  bool handlesResponse(RequestOptions request, Response<dynamic> response) =>
+      !_isDisabledFor(request) && _matches(ChallengeOnResponse(response));
+
   @override
   Future<void> onResponse(
     PipelineContext ctx,
     Response<dynamic> response,
   ) async {
-    if (_isDisabledFor(ctx.request)) return;
-
-    if (!_matches(ChallengeOnResponse(response))) return;
+    // The pipeline already asked [handlesResponse] for this response.
+    if (!ctx.isChallengeError) return;
 
     // Server returned a successful HTTP response that the matcher classifies
     // as a challenge (e.g. 200 with a challenge body). Convert it into a

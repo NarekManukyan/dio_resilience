@@ -188,9 +188,7 @@ final class ResiliencePipeline extends Interceptor {
       } finally {
         _endAttempt(ctx);
       }
-      for (final strategy in _strategies) {
-        await strategy.onResponse(ctx, response);
-      }
+      await _runOnResponse(ctx, response);
       if (!ctx.replayInFlight) ctx.settle();
       handler.resolve(response);
     } catch (e, st) {
@@ -218,9 +216,7 @@ final class ResiliencePipeline extends Interceptor {
     _endAttempt(ctx);
 
     try {
-      for (final strategy in _strategies) {
-        await strategy.onResponse(ctx, response);
-      }
+      await _runOnResponse(ctx, response);
     } catch (e, st) {
       // A strategy turned this response into a failure (a challenge-shaped
       // 200): into the error chain, where onError decides.
@@ -257,6 +253,19 @@ final class ResiliencePipeline extends Interceptor {
       return handler.reject(err);
     }
     await _settle(ctx, err, handler);
+  }
+
+  /// Runs every strategy's `onResponse`, after asking the challenge strategy
+  /// once whether [response] is a challenge.
+  Future<void> _runOnResponse(
+    PipelineContext ctx,
+    Response<dynamic> response,
+  ) async {
+    ctx.isChallengeError =
+        _challenge?.handlesResponse(ctx.request, response) ?? false;
+    for (final strategy in _strategies) {
+      await strategy.onResponse(ctx, response);
+    }
   }
 
   /// Runs the strategies on [error] and replays until the request has an

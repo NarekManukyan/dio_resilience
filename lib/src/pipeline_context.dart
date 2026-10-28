@@ -28,9 +28,10 @@ class PipelineContext {
   /// the timeout strategy before any strategy's `onRequest` runs.
   Duration? totalBudget;
 
-  /// True while the pipeline handles an error that a challenge strategy
-  /// will answer. Reset for every error. Lets other strategies (the circuit
-  /// breaker) skip server-issued challenges in their accounting.
+  /// True while the pipeline handles a response or error that a challenge
+  /// strategy will answer. Set for every response and error before any
+  /// strategy sees it. Lets other strategies (the circuit breaker) skip
+  /// server-issued challenges in their accounting.
   bool isChallengeError = false;
 
   /// Optional metadata attached by strategies for logging / metrics.

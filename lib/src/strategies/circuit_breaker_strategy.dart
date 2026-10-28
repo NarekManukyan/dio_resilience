@@ -194,6 +194,9 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
         );
 
       case CircuitPhase.halfOpen:
+        // A replay of a probe (a retry, a refreshed token, a solved
+        // challenge) is still that probe, not a new one.
+        if (ctx.meta['_circuit_key'] == key) return;
         if (state.probesDispatched < halfOpenProbes) {
           state.probesDispatched++;
           ctx.meta['_circuit_key'] = key;
@@ -214,6 +217,8 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
     Response<dynamic> response,
   ) async {
     if (_isDisabledFor(ctx.request)) return;
+    // A challenge-shaped response is no sign of health either.
+    if (ctx.isChallengeError) return;
 
     final key = _keyFor(ctx.request);
     final state = _stateFor(key);
