@@ -43,14 +43,10 @@ const _kHttpOwnFailurePrefixes = [
 /// How dart:io's header size limits end ('… exceeds the 1048576 size limit').
 const _kHttpSizeLimitSuffix = ' size limit';
 
-/// Whether [cause], the error inside a `DioException` of type `unknown`, is
-/// a dropped or failed connection: a socket error, a TLS handshake the
+/// dart:io's own transport failures: a socket error, a TLS handshake the
 /// connection cut short, or an HTTP connection closed before the response
 /// was complete.
-///
-/// A response that failed to decode, a rejected certificate or a redirect
-/// loop fails the same way on every attempt, so it is not one.
-bool isTransportCause(Object? cause) => switch (cause) {
+bool isPlatformTransportCause(Object? cause) => switch (cause) {
       SocketException() => true,
       // The only handshake failure dart:io raises for a cut connection; any
       // other is a negotiation the TLS layer refused.

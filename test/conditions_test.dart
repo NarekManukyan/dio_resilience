@@ -1,7 +1,8 @@
 import 'dart:io';
 
 import 'package:dio/dio.dart';
-import 'package:dio_resilience/src/conditions.dart';
+import 'package:dio_resilience/dio_resilience.dart';
+import 'package:http/http.dart' show ClientException;
 import 'package:test/test.dart';
 
 void main() {
@@ -95,6 +96,8 @@ void main() {
             'Connection closed before full header was received',
           ),
           const HandshakeException('Connection terminated during handshake'),
+          // What the native adapters raise for any transport failure.
+          ClientException('The network connection was lost.'),
         ]) {
           final exception = DioException(
             requestOptions: _mkRequestOptions(),
@@ -144,6 +147,25 @@ void main() {
           elapsed: Duration.zero,
         );
         expect(condition.matches(eval), isFalse);
+      });
+    });
+
+    group('isTransportCause', () {
+      test('accepts a ClientException and dart:io connection failures', () {
+        expect(isTransportCause(ClientException('lost')), isTrue);
+        expect(
+          isTransportCause(const SocketException('Connection refused')),
+          isTrue,
+        );
+      });
+
+      test('rejects a cause that would fail again', () {
+        expect(isTransportCause(null), isFalse);
+        expect(isTransportCause(const FormatException('bad json')), isFalse);
+        expect(
+          isTransportCause(const HttpException('Redirect loop detected')),
+          isFalse,
+        );
       });
     });
 

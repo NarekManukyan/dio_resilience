@@ -280,7 +280,7 @@ Backoff: `Backoff.constant`, `Backoff.linear`, `Backoff.exponential`, `Backoff.e
 | Condition | Matches when |
 |-----------|--------------|
 | `status(int)` / `statusIn({...})` / `statusBetween(a, b)` | The status code matches |
-| `networkError()` | The connection failed or dropped (not a response that failed to decode) |
+| `networkError()` | The connection failed or dropped (not a response that failed to decode), including the native adapters' `ClientException` |
 | `timeout()` | Connect, send or receive timeout |
 | `dioMessageContains(text)` | `DioException.message` contains the text |
 | `responseBodyContains(text)` | The response body contains the text |
