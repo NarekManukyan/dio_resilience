@@ -32,7 +32,8 @@ void main() {
     setUp(() {
       storage = FakeStorage();
       refreshCallCount = 0;
-      refreshedToken = const TokenPair(access: 'new_access', refresh: 'new_refresh');
+      refreshedToken =
+          const TokenPair(access: 'new_access', refresh: 'new_refresh');
     });
 
     tearDown(() {
@@ -87,8 +88,8 @@ void main() {
       final decision = await strategy.onError(ctx, error);
 
       expect(decision, isA<ReplayDecision>());
+      expect((decision! as ReplayDecision).countsAsAttempt, isFalse);
       expect(refreshCallCount, equals(1));
-      expect(ctx.wasReplayedAfterRefresh, isTrue);
 
       // Verify token was updated in storage
       final storedToken = await storage.read();
@@ -175,9 +176,15 @@ void main() {
         type: DioExceptionType.badResponse,
       );
 
-      await expectLater(
-        () => strategy.onError(ctx, error),
-        throwsA(isA<RefreshFailedException>()),
+      final decision = await strategy.onError(ctx, error);
+      expect(
+        decision,
+        isA<FailDecision>().having(
+          (d) => d.error,
+          'error',
+          isA<RefreshFailedException>()
+              .having((e) => e.response?.statusCode, 'status', 401),
+        ),
       );
 
       // Verify storage was cleared

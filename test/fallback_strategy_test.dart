@@ -288,7 +288,8 @@ void main() {
       expect(decision, isNull);
     });
 
-    test('predicate wrapping an endpoint handler delegates correctly', () async {
+    test('predicate wrapping an endpoint handler delegates correctly',
+        () async {
       const altUrl = 'https://mirror.example.com/api';
       final fake = _FakeDio();
       fake.respondWith(

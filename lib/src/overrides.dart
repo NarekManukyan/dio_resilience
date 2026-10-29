@@ -16,6 +16,7 @@ class ResilienceOverrides {
   final RateLimitOverride? rateLimit;
   final HedgingOverride? hedging;
   final FallbackOverride? fallback;
+  final ChallengeOverride? challenge;
 
   const ResilienceOverrides({
     this.retry,
@@ -25,7 +26,57 @@ class ResilienceOverrides {
     this.rateLimit,
     this.hedging,
     this.fallback,
+    this.challenge,
   });
+
+  /// True when no field is set.
+  bool get isEmpty =>
+      retry == null &&
+      auth == null &&
+      timeout == null &&
+      circuit == null &&
+      rateLimit == null &&
+      hedging == null &&
+      fallback == null &&
+      challenge == null;
+
+  /// A copy with the given fields replaced.
+  ResilienceOverrides copyWith({
+    RetryOverride? retry,
+    AuthOverride? auth,
+    TimeoutOverride? timeout,
+    CircuitOverride? circuit,
+    RateLimitOverride? rateLimit,
+    HedgingOverride? hedging,
+    FallbackOverride? fallback,
+    ChallengeOverride? challenge,
+  }) =>
+      ResilienceOverrides(
+        retry: retry ?? this.retry,
+        auth: auth ?? this.auth,
+        timeout: timeout ?? this.timeout,
+        circuit: circuit ?? this.circuit,
+        rateLimit: rateLimit ?? this.rateLimit,
+        hedging: hedging ?? this.hedging,
+        fallback: fallback ?? this.fallback,
+        challenge: challenge ?? this.challenge,
+      );
+}
+
+// ===================== Challenge =====================
+
+/// Per-request override for the challenge strategy.
+sealed class ChallengeOverride {
+  const ChallengeOverride();
+
+  /// Disable the challenge strategy for this request — matched signals fall
+  /// through to retry/fallback as if no challenge strategy were configured.
+  static const ChallengeOverride disabled = ChallengeDisabled();
+}
+
+/// "Skip challenge solve for this request" — see [ChallengeOverride.disabled].
+final class ChallengeDisabled extends ChallengeOverride {
+  const ChallengeDisabled();
 }
 
 // ===================== Retry =====================
@@ -49,12 +100,15 @@ sealed class RetryOverride {
   /// Tweak the retry budget without changing the predicate.
   const factory RetryOverride.attempts(int n) = RetryAttempts;
 
-  /// Full custom policy.
+  /// Full custom policy. [methods] replaces the pipeline's retryable HTTP
+  /// methods for this request (pass `{'POST'}` to retry a POST you know is
+  /// idempotent).
   const factory RetryOverride.policy({
     int? maxAttempts,
     Backoff? backoff,
     List<RetryCondition>? retryOn,
     List<RetryCondition>? doNotRetryOn,
+    Set<String>? methods,
   }) = RetryPolicy;
 }
 
@@ -83,11 +137,13 @@ final class RetryPolicy extends RetryOverride {
   final Backoff? backoff;
   final List<RetryCondition>? retryOn;
   final List<RetryCondition>? doNotRetryOn;
+  final Set<String>? methods;
   const RetryPolicy({
     this.maxAttempts,
     this.backoff,
     this.retryOn,
     this.doNotRetryOn,
+    this.methods,
   });
 }
 
@@ -250,10 +306,9 @@ sealed class FallbackHandler {
   /// Re-fire the original request to [url] (optionally changing [method]).
   ///
   /// The re-fired request travels through the same Dio instance so other
-  /// pipeline strategies (auth, retry, timeout) still apply. A meta flag
-  /// `fallback_in_flight` is set on the context before the re-fire so that
-  /// the fallback strategy skips itself for the secondary request, preventing
-  /// infinite recursion.
+  /// pipeline strategies (auth, retry, timeout) still apply. The re-fired
+  /// request is flagged so the fallback strategy skips itself for it,
+  /// preventing infinite recursion.
   ///
   /// Headers, query parameters, data, and extra options are inherited from the
   /// original request unless overridden by [method].

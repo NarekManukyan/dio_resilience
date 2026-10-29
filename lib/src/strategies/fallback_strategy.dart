@@ -5,9 +5,20 @@ import '../overrides.dart';
 import '../pipeline_context.dart';
 import '../strategy.dart';
 
-/// Meta key stored in [PipelineContext.meta] to suppress recursive fallback
-/// when the fallback endpoint itself fails.
+/// Meta key stored in [PipelineContext.meta] while this request's endpoint
+/// fallback is in flight.
 const String _kFallbackInFlight = 'fallback_in_flight';
+
+/// Flag in the `extra` of an endpoint re-fire. The re-fire is a request of
+/// its own with its own context, so the fallback strategy reads this flag to
+/// stay out of it instead of falling back again, and again.
+const String _kFallbackRefire = '__dio_resilience_fallback_refire__';
+
+/// Pipeline-owned `extra` keys that must not be copied onto a re-fire.
+const _kPipelineOwnedKeys = {
+  '__dio_resilience_pipeline_context__',
+  '__dio_resilience_sub_dispatch__',
+};
 
 /// Fallback strategy — the last resort in the resilience pipeline.
 ///
@@ -23,13 +34,15 @@ const String _kFallbackInFlight = 'fallback_in_flight';
 /// ### Recursion guard
 /// When an [FallbackHandler.endpoint] fires a secondary request and that
 /// request itself errors, the [FallbackStrategy] will NOT try to fall back
-/// again — the `fallback_in_flight` meta flag prevents re-entry.
+/// again — the re-fire is flagged and the fallback strategy skips it.
 ///
 /// ### Pipeline position
-/// Register this strategy LAST via the builder:
+/// The builder always runs it LAST:
 /// ```
-/// auth → rateLimit → circuit → hedging → retry → timeout → fallback
+/// auth → rateLimit → circuit → hedging → challenge → retry → timeout → fallback
 /// ```
+/// so it handles whatever failure the others end with: an exhausted retry,
+/// a pipeline timeout, an open circuit, a failed refresh or challenge.
 ///
 /// Usage:
 /// ```dart
@@ -72,8 +85,11 @@ final class FallbackStrategy extends ResilienceStrategy {
     PipelineContext ctx,
     DioException error,
   ) async {
-    // Skip if we are already inside a fallback endpoint re-fire.
-    if (ctx.meta[_kFallbackInFlight] == true) {
+    // Never fall back from a cancellation, or from inside an endpoint
+    // re-fire.
+    if (error.type == DioExceptionType.cancel ||
+        ctx.meta[_kFallbackInFlight] == true ||
+        ctx.request.extra[_kFallbackRefire] == true) {
       return null;
     }
 
@@ -128,7 +144,10 @@ final class FallbackStrategy extends ResilienceStrategy {
       case EndpointFallbackHandler(url: final url, method: final method):
         return _fireEndpoint(url: url, method: method, ctx: ctx, error: error);
 
-      case PredicateFallbackHandler(predicate: final pred, handler: final inner):
+      case PredicateFallbackHandler(
+          predicate: final pred,
+          handler: final inner
+        ):
         if (!pred(error)) return null;
         return _tryHandler(inner, ctx, error);
     }
@@ -164,8 +183,12 @@ final class FallbackStrategy extends ResilienceStrategy {
         contentType: original.contentType,
         receiveTimeout: original.receiveTimeout,
         sendTimeout: original.sendTimeout,
-        // Copy extra so pipeline context key is preserved for the new request.
-        extra: Map<String, dynamic>.from(original.extra),
+        extra: {
+          for (final entry in original.extra.entries)
+            if (!_kPipelineOwnedKeys.contains(entry.key))
+              entry.key: entry.value,
+          _kFallbackRefire: true,
+        },
       );
 
       final response = await dio.request<dynamic>(
@@ -173,6 +196,7 @@ final class FallbackStrategy extends ResilienceStrategy {
         data: original.data,
         queryParameters: original.queryParameters,
         options: options,
+        cancelToken: original.cancelToken,
       );
 
       return StrategyDecision.respond(response);

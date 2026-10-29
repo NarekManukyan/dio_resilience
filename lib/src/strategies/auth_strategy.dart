@@ -34,56 +34,138 @@ enum AuthState {
 /// to signal that refresh failed.
 typedef RefreshToken = Future<TokenPair?> Function(TokenPair? current);
 
+/// Refreshes the token of one [AccountId], for requests sent with
+/// `Options().withAccount(id)`. Same contract as [RefreshToken].
+typedef RefreshAccountToken = Future<TokenPair?> Function(
+  AccountId account,
+  TokenPair? current,
+);
+
 /// Predicate to detect whether a request is the refresh endpoint itself.
 ///
 /// Return true if this request should skip auth handling (not inject token,
 /// not trigger refresh on 401).
 typedef IsRefreshRequest = bool Function(RequestOptions request);
 
+/// A request whose credentials were rejected, reported to
+/// [AuthStrategy.onAuthFailure].
+final class AuthRejection {
+  /// The rejected request.
+  final RequestOptions request;
+
+  /// The access token the request carried, or null if it carried none. Lets
+  /// an app with several sessions tell which one ended.
+  final String? rejectedToken;
+
+  /// The account the request was sent for (`withAccount`), if any.
+  final AccountId? account;
+
+  /// The response that rejected the token (the `401`), or null when a
+  /// preemptive refresh failed before the request was sent.
+  final Response<dynamic>? response;
+
+  /// True when a token refresh was tried for this request and failed, or
+  /// its new token was rejected too.
+  final bool refreshAttempted;
+
+  /// What the refresh failed with, if it threw.
+  final Object? refreshError;
+
+  const AuthRejection({
+    required this.request,
+    required this.rejectedToken,
+    required this.account,
+    required this.response,
+    required this.refreshAttempted,
+    this.refreshError,
+  });
+}
+
+/// Context key marking a request that already had its token refreshed, so a
+/// second `401` ends it instead of refreshing forever.
+const String _kRefreshedKey = '__dio_resilience_auth_refreshed__';
+
+/// Context key marking a request that carries a token this strategy put in
+/// its `Authorization` header.
+const String _kInjectedKey = '__dio_resilience_auth_injected__';
+
 /// Strategy that manages OAuth/JWT token injection and refresh.
 ///
 /// Injects the access token as `Authorization: Bearer <token>` (or custom
-/// scheme) on each request. When a 401 or [shouldRefresh] match occurs,
-/// triggers a refresh via the user-supplied [refreshToken] callback.
-/// Implements single-flight refresh: concurrent 401s share a single in-flight
-/// refresh operation via a [Completer].
+/// scheme) on each request.
 ///
-/// Honors [AuthOverride.disabled] and [AuthOverride.account] per-request.
-/// Emits [AuthState] changes via [authStateStream].
+/// With a [refreshToken] callback, a 401 or [shouldRefresh] match triggers a
+/// refresh. Refresh is single-flight per account: concurrent 401s share one
+/// refresh. A 401 for a token that was already replaced (another request
+/// refreshed it meanwhile) just replays with the new token. A request gets
+/// one refresh; a 401 for its refreshed token ends it with a
+/// [RefreshFailedException].
+///
+/// Without [refreshToken] the strategy only injects tokens: a 401 is
+/// reported to [onAuthFailure] and reaches the caller unchanged.
+///
+/// Honors [AuthOverride.disabled], [AuthOverride.account] and the
+/// [kSkipAuthKey] flag per request. Emits [AuthState] changes via
+/// [authStateStream].
 class AuthStrategy extends ResilienceStrategy {
-  /// Primary token storage.
+  /// Token storage for requests without an account.
   final TokenStorage storage;
 
-  /// Optional storage for multi-account support.
-  final TokenStorage? multiAccountStorage;
+  /// Token storage for requests sent with `withAccount(id)`. Without it
+  /// those requests use [storage].
+  final AccountTokenStorage? accountStorage;
 
-  /// Callback to refresh the token.
-  final RefreshToken refreshToken;
+  /// Callback to refresh the token. Null turns refresh off.
+  final RefreshToken? refreshToken;
+
+  /// Callback to refresh one account's token. Defaults to [refreshToken].
+  final RefreshAccountToken? refreshAccountToken;
 
   /// Authorization scheme (default 'Bearer').
   final String scheme;
 
   /// Preemptive refresh window: if [TokenPair.accessExpiresAt] is within
-  /// this duration of now, trigger refresh before allowing the request.
+  /// this duration of now, or already past, refresh before sending the
+  /// request.
   final Duration preemptiveRefreshWindow;
 
-  /// Optional predicate to detect refresh endpoint (skip auth for it).
-  /// If not provided, looks for [Options.extra] flag instead.
+  /// Optional predicate to detect refresh endpoint (skip auth for it). The
+  /// [kSkipAuthKey] flag in `extra` is honored as well.
   final IsRefreshRequest? isRefreshRequest;
 
   /// Optional predicate to determine if a non-401 error should trigger
   /// refresh. Return true to attempt refresh; false otherwise.
   final bool Function(DioException error)? shouldRefresh;
 
-  /// Callback fired when refresh fails terminally. Typically used to route
-  /// the user to a login screen.
+  /// Called for every request whose credentials were rejected: a 401
+  /// without refresh, a failed refresh, or a 401 for a refreshed token.
+  final void Function(AuthRejection rejection)? onAuthFailure;
+
+  /// Callback fired once when a refresh fails terminally.
+  @Deprecated('Use onAuthFailure, which says which request and token failed')
   final void Function()? onRefreshFailed;
+
+  /// Clear the token storage when a refresh fails. Turn off when the app
+  /// decides what happens to the session itself (in [onAuthFailure]).
+  final bool clearTokensOnRefreshFailure;
 
   /// Callback fired when a user is detected as unauthenticated.
   final void Function()? onUnauthenticated;
 
+  /// Clock for token expiry. Defaults to [DateTime.now].
+  final DateTime Function() now;
+
   final StreamController<AuthState> _authStateController;
-  Completer<void>? _refreshInFlight;
+  AuthState _authState = AuthState.idle;
+
+  /// In-flight refresh per account (null: the [storage] session).
+  final Map<AccountId?, Future<TokenPair>> _refreshes = {};
+
+  /// The last finished refresh per account: the access token it replaced
+  /// and the pair that replaced it. A request that read the old pair before
+  /// that refresh wrote the new one gets the new pair instead of a second
+  /// refresh, which a rotating refresh token would reject.
+  final Map<AccountId?, ({String? from, TokenPair to})> _lastRefresh = {};
 
   @override
   String get name => 'auth';
@@ -93,92 +175,80 @@ class AuthStrategy extends ResilienceStrategy {
 
   AuthStrategy({
     required this.storage,
-    required this.refreshToken,
-    this.multiAccountStorage,
+    this.refreshToken,
+    this.accountStorage,
+    this.refreshAccountToken,
     this.scheme = 'Bearer',
     this.preemptiveRefreshWindow = const Duration(minutes: 1),
     this.isRefreshRequest,
     this.shouldRefresh,
-    this.onRefreshFailed,
+    this.onAuthFailure,
+    @Deprecated('Use onAuthFailure') this.onRefreshFailed,
+    this.clearTokensOnRefreshFailure = true,
     this.onUnauthenticated,
-  }) : _authStateController = StreamController<AuthState>.broadcast();
+    DateTime Function()? now,
+  })  : now = now ?? DateTime.now,
+        _authStateController = StreamController<AuthState>.broadcast();
 
   /// Clean up the stream controller.
   void dispose() {
     _authStateController.close();
   }
 
-  /// Manually log out the user (clears storage and emits forcedLogout).
+  /// Manually log out (clears storage and emits forcedLogout). With
+  /// [accountId] and an [accountStorage], clears only that account.
   Future<void> logout({AccountId? accountId}) async {
-    if (accountId != null && multiAccountStorage != null) {
-      await multiAccountStorage!.clear();
-    } else {
-      await storage.clear();
-    }
+    final account = _accountKey(accountId);
+    _lastRefresh.remove(account);
+    await _clear(account);
     _emitAuthState(AuthState.forcedLogout);
   }
 
   @override
   Future<void> onRequest(PipelineContext ctx) async {
-    final overrides = overridesFor(ctx.request);
-    final authOverride = overrides?.auth;
+    if (_skips(ctx.request)) return;
 
-    // Honor AuthOverride.disabled
-    if (authOverride is AuthDisabled) {
-      return;
-    }
-
-    // Check if this is a refresh request (skip auth for it)
-    if (_isRefreshRequest(ctx.request)) {
-      return;
-    }
-
-    // Determine which storage to read from
-    final AccountId? account = switch (authOverride) {
-      AuthAccount aa => aa.account,
-      _ => null,
-    };
-
-    final effectiveStorage = account != null && multiAccountStorage != null
-        ? multiAccountStorage!
-        : storage;
-
-    // Read token
-    final pair = await effectiveStorage.read();
+    final account = _accountKey(_overrideAccount(ctx.request));
+    var pair = await _read(account);
     if (pair == null) {
+      // Signed out since an earlier attempt: don't resend that token.
+      if (ctx.meta.remove(_kInjectedKey) == true) {
+        ctx.request.headers.remove('Authorization');
+      }
       _emitAuthState(AuthState.unauthenticated);
       onUnauthenticated?.call();
       return;
     }
 
-    // Check if preemptive refresh is needed
-    if (pair.accessExpiresAt != null) {
-      final now = DateTime.now();
-      final expiresAt = pair.accessExpiresAt!;
-      if (expiresAt.isBefore(now.add(preemptiveRefreshWindow)) &&
-          expiresAt.isAfter(now)) {
-        // Preemptively refresh
-        await _doRefresh(ctx, pair, effectiveStorage);
-        // If refresh was successful, re-read the new token
-        final newPair = await effectiveStorage.read();
-        if (newPair != null) {
-          _injectAuthHeader(ctx.request, newPair);
-        }
-        return;
+    final expiresAt = pair.accessExpiresAt;
+    if (_canRefresh(account) &&
+        expiresAt != null &&
+        !expiresAt.isAfter(now().add(preemptiveRefreshWindow))) {
+      final expiring = pair;
+      try {
+        pair = await _refresh(account, expiring);
+      } catch (cause, st) {
+        _report(
+          AuthRejection(
+            request: ctx.request,
+            rejectedToken: expiring.access,
+            account: account,
+            response: null,
+            refreshAttempted: true,
+            refreshError: cause,
+          ),
+        );
+        throw RefreshFailedException(
+          requestOptions: ctx.request,
+          error: cause,
+          stackTrace: st,
+        );
       }
     }
 
-    // Inject the authorization header
-    _injectAuthHeader(ctx.request, pair);
+    ctx.request.headers['Authorization'] = '$scheme ${pair.access}';
+    ctx.meta[_kInjectedKey] = true;
     _emitAuthState(AuthState.authenticated);
-  }
-
-  @override
-  Future<void> onResponse(
-    PipelineContext ctx,
-    Response<dynamic> response,
-  ) async {
-    // No-op: response succeeded with current token.
   }
 
   @override
@@ -186,121 +256,164 @@ class AuthStrategy extends ResilienceStrategy {
     PipelineContext ctx,
     DioException error,
   ) async {
-    final overrides = overridesFor(ctx.request);
-    final authOverride = overrides?.auth;
+    if (_skips(ctx.request)) return null;
+    if (error is DioResilienceException) return null;
 
-    // Honor AuthOverride.disabled
-    if (authOverride is AuthDisabled) {
-      return null;
-    }
-
-    // Check if this is a refresh request (don't retry refresh on 401)
-    if (_isRefreshRequest(ctx.request)) {
-      return null;
-    }
-
-    // Determine which storage to read from
-    final AccountId? account = switch (authOverride) {
-      AuthAccount aa => aa.account,
-      _ => null,
-    };
-
-    final effectiveStorage = account != null && multiAccountStorage != null
-        ? multiAccountStorage!
-        : storage;
-
-    // Check if refresh should be triggered
     final shouldTriggerRefresh = error.response?.statusCode == 401 ||
         (shouldRefresh != null && shouldRefresh!(error));
+    if (!shouldTriggerRefresh) return null;
 
-    if (!shouldTriggerRefresh) {
+    final account = _accountKey(_overrideAccount(ctx.request));
+    final sent = _sentToken(ctx.request);
+    AuthRejection rejection({bool attempted = false, Object? cause}) =>
+        AuthRejection(
+          request: ctx.request,
+          rejectedToken: sent,
+          account: account,
+          response: error.response,
+          refreshAttempted: attempted,
+          refreshError: cause,
+        );
+
+    if (!_canRefresh(account)) {
+      // Injection only: the 401 is the caller's answer.
+      _report(rejection());
       return null;
     }
 
-    // Get current token
-    final pair = await effectiveStorage.read();
+    if (ctx.meta[_kRefreshedKey] == true) {
+      // The refreshed token was rejected too; another refresh won't help.
+      _report(rejection(attempted: true));
+      return StrategyDecision.fail(
+        RefreshFailedException(
+          requestOptions: ctx.request,
+          response: error.response,
+          stackTrace: error.stackTrace,
+        ),
+      );
+    }
+
+    final stored = await _read(account);
+    final replaced = _lastRefresh[account]?.from;
+    if (sent != null &&
+        ((stored != null && stored.access != sent) || replaced == sent)) {
+      // Another request refreshed the token while this one was in flight.
+      return const StrategyDecision.replay(countsAsAttempt: false);
+    }
 
     try {
-      await _doRefresh(ctx, pair, effectiveStorage);
-    } on RefreshFailedException {
+      await _refresh(account, stored);
+    } catch (cause, st) {
+      _report(rejection(attempted: true, cause: cause));
+      return StrategyDecision.fail(
+        RefreshFailedException(
+          requestOptions: ctx.request,
+          response: error.response,
+          error: cause,
+          stackTrace: st,
+        ),
+      );
+    }
+
+    ctx.meta[_kRefreshedKey] = true;
+    return const StrategyDecision.replay(countsAsAttempt: false);
+  }
+
+  /// Refreshes [account]'s token, sharing a refresh already in flight.
+  Future<TokenPair> _refresh(AccountId? account, TokenPair? current) {
+    final inFlight = _refreshes[account];
+    if (inFlight != null) return inFlight;
+
+    final last = _lastRefresh[account];
+    if (last != null && current != null && current.access == last.from) {
+      // Already refreshed away from this token; [current] was a stale read.
+      return Future.value(last.to);
+    }
+
+    final refresh = _runRefresh(account, current);
+    _refreshes[account] = refresh;
+    unawaited(
+      refresh.then<void>((_) {}, onError: (Object _) {}).whenComplete(() {
+        if (identical(_refreshes[account], refresh)) {
+          _refreshes.remove(account);
+        }
+      }),
+    );
+    return refresh;
+  }
+
+  Future<TokenPair> _runRefresh(AccountId? account, TokenPair? current) async {
+    _emitAuthState(AuthState.refreshing);
+    try {
+      final refreshAccount = refreshAccountToken;
+      final pair = account != null && refreshAccount != null
+          ? await refreshAccount(account, current)
+          : await refreshToken!(current);
+      if (pair == null) {
+        throw StateError('refreshToken returned null');
+      }
+      await _write(account, pair);
+      _lastRefresh[account] = (from: current?.access, to: pair);
+      _emitAuthState(AuthState.authenticated);
+      return pair;
+    } catch (_) {
+      if (clearTokensOnRefreshFailure) {
+        await _clear(account);
+      }
+      _emitAuthState(AuthState.unauthenticated);
+      // ignore: deprecated_member_use_from_same_package
+      onRefreshFailed?.call();
       rethrow;
     }
-
-    // Mark as replayed after refresh and request replay
-    ctx.wasReplayedAfterRefresh = true;
-    return const StrategyDecision.replay();
   }
 
-  /// Perform the actual token refresh, with single-flight semantics.
-  ///
-  /// If a refresh is already in flight, this awaits the same Completer.
-  /// On success, updates storage with new token.
-  /// On failure, clears storage and throws [RefreshFailedException].
-  Future<void> _doRefresh(
-    PipelineContext ctx,
-    TokenPair? currentPair,
-    TokenStorage effectiveStorage,
-  ) async {
-    // Single-flight: if refresh is already in progress, await it
-    if (_refreshInFlight != null) {
-      await _refreshInFlight!.future;
-      return;
-    }
+  bool _canRefresh(AccountId? account) =>
+      refreshToken != null || (account != null && refreshAccountToken != null);
 
-    _refreshInFlight = Completer<void>();
-    _emitAuthState(AuthState.refreshing);
+  /// The account whose tokens serve this request: null (the [storage]
+  /// session) unless it was sent `withAccount` and there is an
+  /// [accountStorage].
+  AccountId? _accountKey(AccountId? account) =>
+      accountStorage == null ? null : account;
 
-    try {
-      final newPair = await refreshToken(currentPair);
-      if (newPair == null) {
-        throw Exception('refreshToken returned null');
-      }
+  AccountId? _overrideAccount(RequestOptions request) =>
+      switch (overridesFor(request)?.auth) {
+        AuthAccount(:final account) => account,
+        _ => null,
+      };
 
-      await effectiveStorage.write(newPair);
-      _emitAuthState(AuthState.authenticated);
-      _refreshInFlight!.complete();
-    } catch (e) {
-      await effectiveStorage.clear();
-      _emitAuthState(AuthState.unauthenticated);
-      onRefreshFailed?.call();
+  Future<TokenPair?> _read(AccountId? account) =>
+      account == null ? storage.read() : accountStorage!.read(account);
 
-      final exception = RefreshFailedException(
-        requestOptions: ctx.request,
-        error: e,
-        stackTrace: StackTrace.current,
-      );
+  Future<void> _write(AccountId? account, TokenPair pair) => account == null
+      ? storage.write(pair)
+      : accountStorage!.write(account, pair);
 
-      // Suppress "unhandled" errors when this completer has no concurrent
-      // waiters — the originating caller below will throw the exception
-      // synchronously, and any single-flight waiters attach via
-      // `await _refreshInFlight!.future` which installs its own listener.
-      unawaited(_refreshInFlight!.future.catchError((_) {}));
-      _refreshInFlight!.completeError(exception);
-      // Throw the typed RefreshFailedException — not the inner cause — so
-      // callers can pattern-match on the concrete exception type.
-      throw exception;
-    } finally {
-      _refreshInFlight = null;
-    }
+  Future<void> _clear(AccountId? account) =>
+      account == null ? storage.clear() : accountStorage!.clear(account);
+
+  /// The token this request was sent with, read from its header.
+  String? _sentToken(RequestOptions request) {
+    final header = request.headers['Authorization'];
+    if (header is! String) return null;
+    final prefix = '$scheme ';
+    return header.startsWith(prefix) ? header.substring(prefix.length) : null;
   }
 
-  /// Check if the request is a refresh endpoint.
-  bool _isRefreshRequest(RequestOptions request) {
-    if (isRefreshRequest != null) {
-      return isRefreshRequest!(request);
-    }
-
-    // Look for a flag in Options.extra
-    return request.extra['isRefreshRequest'] == true;
+  /// Whether auth stays out of this request: disabled for it, or it is the
+  /// refresh endpoint / brings its own credentials.
+  bool _skips(RequestOptions request) {
+    if (overridesFor(request)?.auth is AuthDisabled) return true;
+    return (isRefreshRequest?.call(request) ?? false) ||
+        request.extra[kSkipAuthKey] == true;
   }
 
-  /// Inject the Authorization header into the request.
-  void _injectAuthHeader(RequestOptions request, TokenPair pair) {
-    request.headers['Authorization'] = '$scheme ${pair.access}';
-  }
+  void _report(AuthRejection rejection) => onAuthFailure?.call(rejection);
 
-  /// Emit an auth state change to the stream.
+  /// Emit an auth state change to the stream, only when it changes.
   void _emitAuthState(AuthState state) {
+    if (state == _authState && state != AuthState.forcedLogout) return;
+    _authState = state;
     if (!_authStateController.isClosed) {
       _authStateController.add(state);
     }

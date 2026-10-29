@@ -84,8 +84,7 @@ class _ImmediateAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-ResponseBody _ok([String body = 'ok']) =>
-    ResponseBody.fromString(body, 200);
+ResponseBody _ok([String body = 'ok']) => ResponseBody.fromString(body, 200);
 
 Dio _buildDio(HttpClientAdapter adapter) {
   final dio = Dio(BaseOptions(validateStatus: (s) => s != null && s < 400));
@@ -293,7 +292,8 @@ void main() {
       c1.complete(_ok('late'));
     });
 
-    test('HedgingOverride.disabled suppresses hedging for one request', () async {
+    test('HedgingOverride.disabled suppresses hedging for one request',
+        () async {
       final c1 = Completer<ResponseBody>()..complete(_ok('only'));
       // Second completer would be reached only if hedging fires.
       final c2 = Completer<ResponseBody>()..complete(_ok('hedge'));
@@ -317,7 +317,8 @@ void main() {
       expect(adapter.callCount, 1);
     });
 
-    test('HedgingOverride.maxParallel(1) via .hedge() suppresses hedging', () async {
+    test('HedgingOverride.maxParallel(1) via .hedge() suppresses hedging',
+        () async {
       final c1 = Completer<ResponseBody>()..complete(_ok('only'));
       final adapter = _ControllableAdapter([c1]);
       final dio = _buildDio(adapter);
@@ -337,7 +338,8 @@ void main() {
       expect(adapter.callCount, 1);
     });
 
-    test('HedgingOverride.delay() via .hedge() overrides inter-hedge delay', () async {
+    test('HedgingOverride.delay() via .hedge() overrides inter-hedge delay',
+        () async {
       // With a very long default delay but a short override, the hedge fires quickly.
       final c1 = Completer<ResponseBody>(); // primary slow
       final c2 = Completer<ResponseBody>()..complete(_ok('hedge'));
@@ -364,7 +366,8 @@ void main() {
   });
 
   group('HedgingStrategy + RetryStrategy integration', () {
-    test('hedging counts as ONE attempt — retry still fires on failure', () async {
+    test('hedging counts as ONE attempt — retry still fires on failure',
+        () async {
       // Primary slow, hedge also fails; hedging resolves with failure.
       // Retry should pick it up and retry once more (attempt 2).
       // On the retry, primary succeeds immediately.
@@ -422,7 +425,8 @@ void main() {
       expect(callCount, 3);
     });
 
-    test('hedging+retry does not multiply attemptNumber unexpectedly', () async {
+    test('hedging+retry does not multiply attemptNumber unexpectedly',
+        () async {
       // maxParallel=2 means 2 HTTP calls per logical attempt.
       // With maxAttempts=3, worst case is 3*2 = 6 HTTP calls.
       // Verify we don't exceed that.

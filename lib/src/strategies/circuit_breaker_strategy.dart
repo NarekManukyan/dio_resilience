@@ -10,6 +10,10 @@ import '../strategy.dart';
 // Circuit state machine
 // ---------------------------------------------------------------------------
 
+/// Context key holding the circuit whose half-open probe slot a request
+/// took, until the probe has a result.
+const String _kProbeKey = '_circuit_key';
+
 /// The current state of a single circuit keyed by host (or custom key).
 enum CircuitPhase { closed, open, halfOpen }
 
@@ -126,6 +130,10 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
   /// simulate time without sleeping.
   final DateTime Function() now;
 
+  /// Called when a circuit changes phase.
+  final void Function(String key, CircuitPhase from, CircuitPhase to)?
+      onStateChange;
+
   /// In-memory per-key circuit state.
   final Map<String, _CircuitState> _states = {};
 
@@ -144,12 +152,14 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
   ///   non-standard).
   /// - [now]: injectable clock used for all time checks. Pass a custom
   ///   function in tests to control time without sleeping.
+  /// - [onStateChange]: called on every phase change.
   CircuitBreakerStrategy({
     this.failureThreshold = 5,
     this.windowDuration = const Duration(seconds: 60),
     this.cooldown = const Duration(seconds: 30),
     this.halfOpenProbes = 1,
     this.keyExtractor,
+    this.onStateChange,
     DateTime Function()? now,
   }) : now = now ?? DateTime.now;
 
@@ -171,13 +181,13 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
 
       case CircuitPhase.open:
         final elapsed = timestamp.difference(state.openedAt!);
-        if (elapsed >= cooldown) {
+        if (elapsed >= _cooldownFor(ctx.request)) {
           // Cooldown has passed: allow one probe batch by entering half-open.
-          state.enterHalfOpen();
+          _move(key, state, state.enterHalfOpen);
           state.probesDispatched++;
           // Store the key on the context so onResponse/onError can look it up
           // without re-computing.
-          ctx.meta['_circuit_key'] = key;
+          ctx.meta[_kProbeKey] = key;
           return;
         }
         // Still open — short-circuit.
@@ -188,9 +198,12 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
         );
 
       case CircuitPhase.halfOpen:
+        // A replay of a probe (a retry, a refreshed token, a solved
+        // challenge) is still that probe, not a new one.
+        if (ctx.meta[_kProbeKey] == key) return;
         if (state.probesDispatched < halfOpenProbes) {
           state.probesDispatched++;
-          ctx.meta['_circuit_key'] = key;
+          ctx.meta[_kProbeKey] = key;
           return;
         }
         // Probe budget exhausted — reject until we close or re-open.
@@ -208,15 +221,19 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
     Response<dynamic> response,
   ) async {
     if (_isDisabledFor(ctx.request)) return;
+    // A challenge-shaped response is no sign of health either.
+    if (ctx.isChallengeError) return;
 
     final key = _keyFor(ctx.request);
     final state = _stateFor(key);
+    // This request's probe (if it was one) has its result.
+    ctx.meta.remove(_kProbeKey);
 
     switch (state.phase) {
       case CircuitPhase.halfOpen:
         state.halfOpenSuccesses++;
         if (state.halfOpenSuccesses >= halfOpenProbes) {
-          state.close();
+          _move(key, state, state.close);
         }
       case CircuitPhase.closed:
         // Reset the rolling window on success so transient spikes don't
@@ -237,24 +254,42 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
     // replay logic. Return null so the pipeline continues to the next strategy.
     if (_isDisabledFor(ctx.request)) return null;
 
-    // Do not count circuit-open exceptions as failures (they were already
-    // rejected before the request was ever sent).
-    if (error.error is CircuitOpenException) return null;
+    // A cancelled request says nothing about the backend, and neither do
+    // the pipeline's own decisions (circuit open, rate limit, exhausted
+    // retries): the attempts behind them were counted as they failed, or
+    // never reached the backend. An attempt the deadline cut short did
+    // reach it, and it didn't answer in time: that one counts. A half-open
+    // probe that ends without a result gives its slot back in [onEnd].
+    final cutByDeadline =
+        error is PipelineTimeoutException && error.cutAttempt;
+    if (!cutByDeadline &&
+        (error.type == DioExceptionType.cancel ||
+            error is DioResilienceException ||
+            error.error is DioResilienceException)) {
+      return null;
+    }
+
+    // Do not count challenge-shaped responses as failures. The server is
+    // instructing the client to solve a proof (CAPTCHA / MFA / attestation)
+    // and replay; this is not backend unavailability.
+    if (ctx.isChallengeError) return null;
 
     final key = _keyFor(ctx.request);
     final state = _stateFor(key);
     final timestamp = now();
+    // This request's probe (if it was one) has its result.
+    ctx.meta.remove(_kProbeKey);
 
     switch (state.phase) {
       case CircuitPhase.closed:
         state.recordFailure(timestamp);
         final count = state.failureCount(windowDuration, timestamp);
-        if (count >= failureThreshold) {
-          state.trip(timestamp);
+        if (count >= _thresholdFor(ctx.request)) {
+          _move(key, state, () => state.trip(timestamp));
         }
       case CircuitPhase.halfOpen:
         // Any failure in half-open → reopen.
-        state.trip(timestamp);
+        _move(key, state, () => state.trip(timestamp));
       case CircuitPhase.open:
         // Should not normally reach here (request rejected in onRequest),
         // but record anyway.
@@ -264,19 +299,58 @@ final class CircuitBreakerStrategy extends ResilienceStrategy {
     return null;
   }
 
+  /// A half-open probe that ended without a result (cancelled, a failed
+  /// challenge, a pipeline decision) gives its slot back, or the circuit
+  /// would wait for that result forever.
+  @override
+  void onEnd(PipelineContext ctx) => _releaseProbe(ctx);
+
   // ----- Internal helpers --------------------------------------------------
 
   /// Retrieve (or lazily create) the state object for [key].
   _CircuitState _stateFor(String key) =>
       _states.putIfAbsent(key, _CircuitState.new);
 
-  /// Compute the circuit key for a request.
-  String _keyFor(RequestOptions request) {
-    if (keyExtractor != null) return keyExtractor!(request);
+  /// [failureThreshold], or this request's `CircuitOverride.threshold`.
+  int _thresholdFor(RequestOptions request) =>
+      switch (overridesFor(request)?.circuit) {
+        CircuitThreshold(:final count) => count,
+        _ => failureThreshold,
+      };
 
-    // Check per-request circuitKey override stashed in extra.
+  /// [cooldown], or this request's `CircuitOverride.cooldown`.
+  Duration _cooldownFor(RequestOptions request) =>
+      switch (overridesFor(request)?.circuit) {
+        CircuitCooldown(:final duration) => duration,
+        _ => cooldown,
+      };
+
+  /// Gives back the half-open probe slot [ctx] took, if it took one.
+  void _releaseProbe(PipelineContext ctx) {
+    final key = ctx.meta.remove(_kProbeKey);
+    if (key is! String) return;
+    final state = _states[key];
+    if (state != null &&
+        state.phase == CircuitPhase.halfOpen &&
+        state.probesDispatched > 0) {
+      state.probesDispatched--;
+    }
+  }
+
+  /// Runs [transition] on [state] and reports the phase change, if any.
+  void _move(String key, _CircuitState state, void Function() transition) {
+    final from = state.phase;
+    transition();
+    if (state.phase != from) onStateChange?.call(key, from, state.phase);
+  }
+
+  /// Compute the circuit key for a request: the per-request `circuitKey`,
+  /// then [keyExtractor], then host[:port].
+  String _keyFor(RequestOptions request) {
     final perRequest = request.extra[kCircuitKeyOverride];
-    if (perRequest is String) return perRequest;
+    if (perRequest is String && perRequest.isNotEmpty) return perRequest;
+
+    if (keyExtractor != null) return keyExtractor!(request);
 
     // Default: host[:port] — keeps circuits isolated per back-end service.
     final uri = Uri.tryParse(request.uri.toString());

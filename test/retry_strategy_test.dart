@@ -14,7 +14,7 @@ void main() {
     late RequestOptions request;
 
     setUp(() {
-      strategy = const RetryStrategy();
+      strategy = RetryStrategy();
       request = RequestOptions(path: 'https://example.com/test');
       ctx = PipelineContext(request);
     });
@@ -202,12 +202,15 @@ void main() {
       expect(hasDelay, isTrue);
     });
 
-    test('Retry-After header (numeric seconds) overrides computed backoff', () async {
+    test('Retry-After header (numeric seconds) overrides computed backoff',
+        () async {
       ctx.attemptNumber = 1;
       final response = Response<dynamic>(
         statusCode: 429,
         requestOptions: request,
-        headers: Headers.fromMap({'retry-after': ['60']}),
+        headers: Headers.fromMap({
+          'retry-after': ['60'],
+        }),
       );
       final error = DioException(
         requestOptions: request,
@@ -216,7 +219,8 @@ void main() {
         message: 'Too Many Requests',
       );
 
-      final decision = await strategy.onError(ctx, error);
+      final decision =
+          await RetryStrategy(maxRetryAfter: null).onError(ctx, error);
 
       var delayInSeconds = 0;
       if (decision != null) {
@@ -231,29 +235,61 @@ void main() {
       expect(delayInSeconds, greaterThanOrEqualTo(60));
     });
 
-    test('wasReplayedAfterRefresh flag does not count against retry budget', () async {
-      ctx.attemptNumber = 1;
-      ctx.wasReplayedAfterRefresh = true;
-
+    test('Retry-After longer than maxRetryAfter ends the request', () async {
       final response = Response<dynamic>(
         statusCode: 503,
         requestOptions: request,
+        headers: Headers.fromMap({
+          'retry-after': ['600'],
+        }),
       );
       final error = DioException(
         requestOptions: request,
         response: response,
         type: DioExceptionType.badResponse,
-        message: 'Service Unavailable',
       );
 
-      final decision = await strategy.onError(ctx, error);
+      expect(await strategy.onError(ctx, error), isNull);
+    });
 
-      // Should return null (let it pass through), not retry.
-      expect(decision, isNull);
-      // Flag should be reset.
-      expect(ctx.wasReplayedAfterRefresh, isFalse);
-      // authReplays metadata should be incremented.
-      expect(ctx.meta['authReplays'], equals(1));
+    test('Retry-After as an HTTP-date waits until that date', () async {
+      final now = DateTime.utc(2026, 5, 5, 12);
+      final dated = RetryStrategy(now: () => now);
+      final response = Response<dynamic>(
+        statusCode: 503,
+        requestOptions: request,
+        headers: Headers.fromMap({
+          'retry-after': ['Tue, 05 May 2026 12:00:20 GMT'],
+        }),
+      );
+      final error = DioException(
+        requestOptions: request,
+        response: response,
+        type: DioExceptionType.badResponse,
+      );
+
+      final decision = await dated.onError(ctx, error);
+      expect(
+        decision,
+        isA<ReplayDecision>().having(
+          (d) => d.delay,
+          'delay',
+          const Duration(seconds: 20),
+        ),
+      );
+    });
+
+    test('does not retry a POST by default', () async {
+      final post =
+          RequestOptions(path: 'https://example.com/test', method: 'POST');
+      final postCtx = PipelineContext(post);
+      final error = DioException(
+        requestOptions: post,
+        response: Response<dynamic>(statusCode: 503, requestOptions: post),
+        type: DioExceptionType.badResponse,
+      );
+
+      expect(await strategy.onError(postCtx, error), isNull);
     });
   });
 }

@@ -45,6 +45,17 @@ abstract interface class TokenStorage {
 
 /// Identifier for one of multiple concurrent identities (multi-account auth).
 ///
-/// Used as `Options().withAccount(AccountId('alice'))`. The pipeline will
-/// look up the tokens for that account and inject them on the request.
+/// Used as `Options().withAccount(AccountId('alice'))`. The pipeline looks
+/// up that account's tokens in the [AccountTokenStorage] and injects them on
+/// the request.
 extension type const AccountId(String value) {}
+
+/// Token persistence for several accounts at once, keyed by [AccountId].
+///
+/// Serves requests sent with `Options().withAccount(id)`. Requests without
+/// an account keep using the pipeline's [TokenStorage].
+abstract interface class AccountTokenStorage {
+  Future<TokenPair?> read(AccountId account);
+  Future<void> write(AccountId account, TokenPair pair);
+  Future<void> clear(AccountId account);
+}

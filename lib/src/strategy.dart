@@ -9,24 +9,31 @@ import 'pipeline_context.dart';
 sealed class StrategyDecision {
   const StrategyDecision();
 
-  /// Re-run the request. The pipeline increments
-  /// [PipelineContext.attemptNumber] and dispatches through Dio again. The
-  /// optional [delay] is honored before the replay fires.
-  const factory StrategyDecision.replay({Duration? delay}) = ReplayDecision;
+  /// Re-run the request. The pipeline waits [delay], then dispatches the same
+  /// [RequestOptions] through Dio again. When [countsAsAttempt] is true (a
+  /// retry) it increments [PipelineContext.attemptNumber]; a replay that
+  /// only fixes the request (a refreshed token, a solved challenge) passes
+  /// false so it doesn't use up the retry budget.
+  const factory StrategyDecision.replay({
+    Duration? delay,
+    bool countsAsAttempt,
+  }) = ReplayDecision;
 
   /// Substitute a successful response (used by fallback).
   const factory StrategyDecision.respond(Response<dynamic> response) =
       RespondDecision;
 
-  /// Give up with a custom exception. The pipeline propagates this to the
-  /// caller.
+  /// Give up with a custom exception. Strategies after the one that decided
+  /// (fallback) still get to handle [error]; if none does, the caller gets
+  /// it.
   const factory StrategyDecision.fail(DioException error) = FailDecision;
 }
 
 /// "Replay this request" — see [StrategyDecision.replay].
 final class ReplayDecision extends StrategyDecision {
   final Duration? delay;
-  const ReplayDecision({this.delay});
+  final bool countsAsAttempt;
+  const ReplayDecision({this.delay, this.countsAsAttempt = true});
 }
 
 /// "Use this response instead" — see [StrategyDecision.respond].
@@ -52,8 +59,19 @@ abstract class ResilienceStrategy {
   /// Stable name used in logs and as the metrics key.
   String get name;
 
+  /// Called once per logical request, before any strategy's [onRequest].
+  /// Resolve per-request settings other strategies read from the context
+  /// here (the timeout strategy sets [PipelineContext.totalBudget]).
+  void onStart(PipelineContext ctx) {}
+
   /// Called before each request attempt is dispatched.
   Future<void> onRequest(PipelineContext ctx) async {}
+
+  /// Called when the request has finished, however it ended (a response, a
+  /// failure, a cancellation). Give back here anything [onRequest] took that
+  /// no outcome released, such as a circuit breaker's half-open probe slot.
+  /// May be called more than once for a request; make it idempotent.
+  void onEnd(PipelineContext ctx) {}
 
   /// Called after a response is received successfully.
   Future<void> onResponse(
@@ -63,6 +81,9 @@ abstract class ResilienceStrategy {
 
   /// Called when a request errors. Return `null` to defer to the next
   /// strategy, or return a [StrategyDecision] to direct the pipeline.
+  ///
+  /// Not called for a cancelled request. After a [FailDecision], only the
+  /// strategies after the deciding one are called, with the new error.
   Future<StrategyDecision?> onError(
     PipelineContext ctx,
     DioException error,

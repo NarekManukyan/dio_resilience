@@ -128,7 +128,7 @@ void main() {
 
         // Second request with a very short budget already consumed.
         final ctx = _ctx('https://api.example.com/');
-        ctx.meta['totalBudget'] = const Duration(milliseconds: 100);
+        ctx.totalBudget = const Duration(milliseconds: 100);
         // Stop the stopwatch so elapsed is always 0 but budget is tiny and
         // the wait (≥1 s) exceeds the remaining budget (100 ms).
         // The strategy compares wait > remaining — 1 s > 100 ms → throw.

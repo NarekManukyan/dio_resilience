@@ -17,7 +17,7 @@ void main() {
       final pipeline = ResiliencePipeline.builder()
           .retry(maxAttempts: 3)
           .build()
-          ..attachTo(dio);
+        ..attachTo(dio);
 
       final response = await dio.get<String>('/test');
 
@@ -55,7 +55,7 @@ void main() {
             },
           )
           .build()
-          ..attachTo(dio);
+        ..attachTo(dio);
 
       final response = await dio.get<String>('/test');
 
@@ -85,7 +85,7 @@ void main() {
             refreshToken: (current) async => null, // Refresh fails
           )
           .build()
-          ..attachTo(dio);
+        ..attachTo(dio);
 
       expect(
         () => dio.get<String>('/test'),
@@ -109,7 +109,7 @@ void main() {
           .retry(maxAttempts: 3, backoff: const Backoff.constant(Duration.zero))
           .timeout(total: const Duration(milliseconds: 150))
           .build()
-          ..attachTo(dio);
+        ..attachTo(dio);
 
       expect(
         () => dio.get<String>('/test'),
