@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1 — 2026-10-29
+
+### Fixes
+
+- **`RetryCondition.networkError()` matches the native adapters' failures.**
+  `native_dio_adapter` (cupertino_http on iOS and macOS, cronet_http on
+  Android) raises every transport failure as a package:http
+  `ClientException`, which no condition recognised, so those requests were
+  never retried as network errors. Each `ClientException` now counts as a
+  dropped connection: the adapters don't say which failure it was.
+
+### New
+
+- **`isTransportCause`** is exported: the test `networkError()` runs on the
+  cause of a `DioException` of type `unknown`, for apps that classify errors
+  the same way outside the retry.
+- Depends on `http` (for `ClientException`).
+
 ## 0.3.0 — 2026-10-29
 
 This release fixes how strategies hand work to each other, so some defaults

@@ -26,3 +26,4 @@ export 'src/strategies/retry_strategy.dart';
 export 'src/strategies/timeout_strategy.dart';
 export 'src/strategy.dart';
 export 'src/token.dart';
+export 'src/transport/transport_cause.dart' show isTransportCause;
